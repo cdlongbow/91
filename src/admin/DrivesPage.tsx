@@ -333,6 +333,7 @@ function GenerationStatusLine({
   const queueLength = status?.queueLength ?? 0;
   const detail = generationDetail(status);
   const title = generationTitle(status, detail);
+  const countText = queueLength > 0 ? `${label === "封面" ? "剩余" : "队列"} ${queueLength}` : "";
 
   return (
     <div className="admin-generation-row" title={title}>
@@ -342,7 +343,7 @@ function GenerationStatusLine({
       </span>
       {(detail || queueLength > 0) && (
         <span className="admin-generation-detail">
-          {[detail, queueLength > 0 ? `队列 ${queueLength}` : ""].filter(Boolean).join(" / ")}
+          {[detail, countText].filter(Boolean).join(" / ")}
         </span>
       )}
     </div>

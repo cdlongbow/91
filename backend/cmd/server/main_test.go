@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -74,6 +75,82 @@ func TestRegisterPreviewWorkerBackfillsPendingWhenPreviewEnabled(t *testing.T) {
 		t.Fatalf("get video after timeout: %v", err)
 	}
 	t.Fatalf("preview status = %q, want ready", got.PreviewStatus)
+}
+
+func TestRegisterPreviewWorkersGenerateThumbnailsBeforePreviews(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	now := time.Now()
+	for _, v := range []*catalog.Video{
+		{ID: "video-1", DriveID: "drive-id", FileID: "file-1", Title: "Clip 1", PreviewStatus: "pending"},
+		{ID: "video-2", DriveID: "drive-id", FileID: "file-2", Title: "Clip 2", PreviewStatus: "pending"},
+	} {
+		v.PublishedAt = now
+		v.CreatedAt = now
+		v.UpdatedAt = now
+		if err := cat.UpsertVideo(ctx, v); err != nil {
+			t.Fatalf("seed video %s: %v", v.ID, err)
+		}
+	}
+
+	app := &App{
+		cat:            cat,
+		workers:        make(map[string]*preview.Worker),
+		thumbWorkers:   make(map[string]*preview.ThumbWorker),
+		previewEnabled: true,
+	}
+	gen := &serverFakeTeaserGenerator{}
+	drv := &serverFakeDrive{}
+	worker := preview.NewWorker(gen, cat, drv, "")
+	thumbWorker := preview.NewThumbWorker(gen, cat, drv)
+	go worker.Run(ctx)
+	go thumbWorker.Run(ctx)
+
+	app.registerPreviewWorkers(ctx, "drive-id", worker, thumbWorker, func() {})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		first, err := cat.GetVideo(ctx, "video-1")
+		if err != nil {
+			t.Fatalf("get video-1: %v", err)
+		}
+		second, err := cat.GetVideo(ctx, "video-2")
+		if err != nil {
+			t.Fatalf("get video-2: %v", err)
+		}
+		if first.ThumbnailURL != "" && second.ThumbnailURL != "" &&
+			first.PreviewStatus == "ready" && second.PreviewStatus == "ready" {
+			events := gen.Events()
+			if len(events) != 4 {
+				t.Fatalf("events = %#v, want 4 generation events", events)
+			}
+			for i, event := range events[:2] {
+				if event[:6] != "thumb:" {
+					t.Fatalf("event %d = %q, want thumbnail before previews; all events=%#v", i, event, events)
+				}
+			}
+			for i, event := range events[2:] {
+				if event[:8] != "preview:" {
+					t.Fatalf("event %d = %q, want previews after thumbnails; all events=%#v", i+2, event, events)
+				}
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("generation did not finish, events=%#v", gen.Events())
 }
 
 func TestRegenFailedPreviewsQueuesOnlyFailedVideosForDrive(t *testing.T) {
@@ -360,18 +437,44 @@ func TestCleanupMissingPikPakVideosRemovesDatabaseRowsAndLocalAssets(t *testing.
 	}
 }
 
-type serverFakeTeaserGenerator struct{}
+type serverFakeTeaserGenerator struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (g *serverFakeTeaserGenerator) record(event string) {
+	g.mu.Lock()
+	g.events = append(g.events, event)
+	g.mu.Unlock()
+}
+
+func (g *serverFakeTeaserGenerator) Events() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.events...)
+}
 
 func (g *serverFakeTeaserGenerator) Probe(context.Context, *drives.StreamLink) (float64, error) {
 	return 30, nil
 }
 
 func (g *serverFakeTeaserGenerator) Generate(context.Context, *drives.StreamLink, float64) (string, error) {
+	g.record("preview")
 	return "/tmp/source-teaser.mp4", nil
 }
 
 func (g *serverFakeTeaserGenerator) MoveToLocal(_ string, videoID string) (string, error) {
+	g.mu.Lock()
+	if len(g.events) > 0 && g.events[len(g.events)-1] == "preview" {
+		g.events[len(g.events)-1] = "preview:" + videoID
+	}
+	g.mu.Unlock()
 	return "/tmp/" + videoID + ".mp4", nil
+}
+
+func (g *serverFakeTeaserGenerator) GenerateThumbnail(_ context.Context, _ *drives.StreamLink, videoID string, _ float64) (string, error) {
+	g.record("thumb:" + videoID)
+	return "/tmp/" + videoID + ".jpg", nil
 }
 
 type serverFakeDrive struct{}

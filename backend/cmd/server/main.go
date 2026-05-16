@@ -212,10 +212,9 @@ func (a *App) SetPreviewEnabled(ctx context.Context, enabled bool) error {
 			for _, d := range a.registry.All() {
 				a.mu.Lock()
 				w := a.workers[d.ID()]
+				tw := a.thumbWorkers[d.ID()]
 				a.mu.Unlock()
-				if w != nil {
-					a.enqueuePending(ctx, d.ID(), w)
-				}
+				a.enqueueDriveGeneration(ctx, d.ID(), w, tw)
 			}
 		}()
 	}
@@ -262,6 +261,15 @@ func (a *App) driveGenerationStatuses() map[string]api.DriveGenerationStatuses {
 	for id, worker := range thumbWorkers {
 		status := out[id]
 		status.Thumbnail = generationStatusFromPreview(worker.Status())
+		missing, err := a.cat.CountVideosNeedingThumbnail(context.Background(), id)
+		if err != nil {
+			log.Printf("[thumb] count missing thumbnails %s: %v", id, err)
+		} else {
+			status.Thumbnail.QueueLength = missing
+			if missing > 0 && status.Thumbnail.State == "idle" {
+				status.Thumbnail.State = "queued"
+			}
+		}
 		out[id] = status
 	}
 	return out
@@ -383,9 +391,6 @@ func (a *App) attachDrive(ctx context.Context, d *catalog.Drive) error {
 	})
 	worker := preview.NewWorker(gen, a.cat, drv, "")
 	thumbWorker := preview.NewThumbWorker(gen, a.cat, drv)
-	if drv.Kind() == "p115" {
-		preview.ShareGenerationState(worker, thumbWorker)
-	}
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	go worker.Run(workerCtx)
@@ -456,15 +461,19 @@ func (a *App) registerPreviewWorkers(ctx context.Context, driveID string, worker
 	} else {
 		delete(a.cancels, driveID)
 	}
-	previewEnabled := a.previewEnabled
 	a.mu.Unlock()
 
-	if thumbWorker != nil {
-		go a.enqueueThumbnails(ctx, driveID, thumbWorker)
+	if worker != nil {
+		if thumbWorker != nil {
+			worker.BeforeTask = func(taskCtx context.Context) bool {
+				return a.waitForThumbnailsBeforePreview(taskCtx, driveID)
+			}
+		} else {
+			worker.BeforeTask = nil
+		}
 	}
-	if previewEnabled && worker != nil {
-		go a.enqueuePending(ctx, driveID, worker)
-	}
+
+	go a.enqueueDriveGeneration(ctx, driveID, worker, thumbWorker)
 }
 
 func (a *App) enqueuePending(ctx context.Context, driveID string, w *preview.Worker) {
@@ -481,6 +490,46 @@ func (a *App) enqueuePending(ctx context.Context, driveID string, w *preview.Wor
 		if !w.EnqueueBlocking(ctx, v) {
 			log.Printf("[preview] enqueue pending canceled for drive=%s", driveID)
 			return
+		}
+	}
+}
+
+func (a *App) enqueueDriveGeneration(ctx context.Context, driveID string, worker *preview.Worker, thumbWorker *preview.ThumbWorker) {
+	if thumbWorker != nil {
+		a.enqueueThumbnails(ctx, driveID, thumbWorker)
+	}
+	if !a.PreviewEnabled() || worker == nil {
+		return
+	}
+	if thumbWorker != nil && !a.waitForThumbnailsBeforePreview(ctx, driveID) {
+		return
+	}
+	a.enqueuePending(ctx, driveID, worker)
+}
+
+func (a *App) waitForThumbnailsBeforePreview(ctx context.Context, driveID string) bool {
+	const pollInterval = time.Second
+	var lastLog time.Time
+	for {
+		missing, err := a.cat.CountVideosNeedingThumbnail(ctx, driveID)
+		if err != nil {
+			log.Printf("[preview] count missing thumbnails drive=%s: %v", driveID, err)
+			return false
+		}
+		if missing == 0 {
+			return true
+		}
+		now := time.Now()
+		if lastLog.IsZero() || now.Sub(lastLog) >= time.Minute {
+			log.Printf("[preview] drive=%s waiting for %d thumbnails before teaser generation", driveID, missing)
+			lastLog = now
+		}
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		case <-timer.C:
 		}
 	}
 }
@@ -528,13 +577,10 @@ func (a *App) runScan(ctx context.Context, driveID string) {
 	a.mu.Unlock()
 
 	var onNew func(v *catalog.Video)
-	if thumbWorker != nil || (a.PreviewEnabled() && worker != nil) {
+	if thumbWorker != nil {
 		onNew = func(v *catalog.Video) {
 			if thumbWorker != nil && v.ThumbnailURL == "" {
 				thumbWorker.Enqueue(v)
-			}
-			if a.PreviewEnabled() && worker != nil {
-				worker.Enqueue(v)
 			}
 		}
 	}
@@ -571,12 +617,7 @@ func (a *App) runScan(ctx context.Context, driveID string) {
 			}
 		}
 	}
-	if thumbWorker != nil {
-		a.enqueueThumbnails(ctx, driveID, thumbWorker)
-	}
-	if a.PreviewEnabled() && worker != nil {
-		go a.enqueuePending(ctx, driveID, worker)
-	}
+	a.enqueueDriveGeneration(ctx, driveID, worker, thumbWorker)
 }
 
 func (a *App) cleanupMissingDriveVideos(ctx context.Context, driveID string, liveFileIDs map[string]struct{}, visitedDirIDs map[string]struct{}, fullDriveScan bool) (int, error) {

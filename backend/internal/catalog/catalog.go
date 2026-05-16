@@ -349,6 +349,18 @@ func (c *Catalog) ListVideosNeedingThumbnail(ctx context.Context, driveID string
 	return out, nil
 }
 
+func (c *Catalog) CountVideosNeedingThumbnail(ctx context.Context, driveID string) (int, error) {
+	var count int
+	err := c.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM videos
+		 WHERE drive_id = ?
+		   AND COALESCE(thumbnail_url, '') = ''
+		   AND COALESCE(hidden, 0) = 0
+		   AND `+uniqueVideoWhereSQL,
+		driveID).Scan(&count)
+	return count, err
+}
+
 func (c *Catalog) GetVideo(ctx context.Context, id string) (*Video, error) {
 	row := c.db.QueryRowContext(ctx, `SELECT `+allVideoCols+` FROM videos WHERE id = ?`, id)
 	return scanVideo(row)

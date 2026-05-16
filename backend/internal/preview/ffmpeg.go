@@ -847,7 +847,8 @@ type Worker struct {
 	ch      chan *catalog.Video
 
 	RateLimitCooldown time.Duration
-	shared            *sharedGenerationState
+	BeforeTask        func(context.Context) bool
+	rateLimit         rateLimitState
 	activity          taskActivity
 }
 
@@ -857,7 +858,6 @@ func NewWorker(gen TeaserGenerator, cat *catalog.Catalog, drv drives.Drive, _ st
 		Catalog: cat,
 		Drive:   drv,
 		ch:      make(chan *catalog.Video, 4096),
-		shared:  newSharedGenerationState(),
 	}
 }
 
@@ -892,7 +892,7 @@ type ThumbWorker struct {
 	ch      chan *catalog.Video
 
 	RateLimitCooldown time.Duration
-	shared            *sharedGenerationState
+	rateLimit         rateLimitState
 	activity          taskActivity
 }
 
@@ -906,11 +906,6 @@ type rateLimitState struct {
 	mu          sync.Mutex
 	until       time.Time
 	lastSkipLog time.Time
-}
-
-type sharedGenerationState struct {
-	rateLimit *rateLimitState
-	gate      sync.Mutex
 }
 
 type TaskStatus struct {
@@ -995,31 +990,6 @@ func NewThumbWorker(gen ThumbnailGenerator, cat *catalog.Catalog, drv drives.Dri
 		Catalog: cat,
 		Drive:   drv,
 		ch:      make(chan *catalog.Video, 4096),
-		shared:  newSharedGenerationState(),
-	}
-}
-
-func newSharedGenerationState() *sharedGenerationState {
-	return &sharedGenerationState{rateLimit: &rateLimitState{}}
-}
-
-// ShareGenerationState makes preview and thumbnail generation for one drive
-// share cooldowns and avoid concurrent reads from the same remote media source.
-func ShareGenerationState(worker *Worker, thumbWorker *ThumbWorker) {
-	state := newSharedGenerationState()
-	if worker != nil && worker.shared != nil {
-		state = worker.shared
-	} else if thumbWorker != nil && thumbWorker.shared != nil {
-		state = thumbWorker.shared
-	}
-	if state.rateLimit == nil {
-		state.rateLimit = &rateLimitState{}
-	}
-	if worker != nil {
-		worker.shared = state
-	}
-	if thumbWorker != nil {
-		thumbWorker.shared = state
 	}
 }
 
@@ -1051,14 +1021,14 @@ func (w *Worker) Status() TaskStatus {
 	if w == nil {
 		return TaskStatus{State: "idle"}
 	}
-	return taskStatus(&w.activity, w.generationState().rateLimit, len(w.ch))
+	return taskStatus(&w.activity, &w.rateLimit, len(w.ch))
 }
 
 func (w *ThumbWorker) Status() TaskStatus {
 	if w == nil {
 		return TaskStatus{State: "idle"}
 	}
-	return taskStatus(&w.activity, w.generationState().rateLimit, len(w.ch))
+	return taskStatus(&w.activity, &w.rateLimit, len(w.ch))
 }
 
 func taskStatus(activity *taskActivity, rateLimit *rateLimitState, queueLength int) TaskStatus {
@@ -1121,69 +1091,25 @@ func (w *ThumbWorker) Run(ctx context.Context) {
 }
 
 func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
-	state := w.generationState()
-	unlock, ok := waitForGenerationTurn(ctx, state, "preview", w.Drive)
-	if !ok {
+	if w.BeforeTask != nil && !w.BeforeTask(ctx) {
 		return
 	}
-	defer unlock()
 
 	w.activity.start(v)
 	defer w.activity.done()
+	if !waitForRateLimitCooldown(ctx, &w.rateLimit, "preview", w.Drive) {
+		return
+	}
 	w.process(ctx, v)
 }
 
 func (w *ThumbWorker) processQueued(ctx context.Context, v *catalog.Video) {
-	state := w.generationState()
-	unlock, ok := waitForGenerationTurn(ctx, state, "thumb", w.Drive)
-	if !ok {
-		return
-	}
-	defer unlock()
-
 	w.activity.start(v)
 	defer w.activity.done()
+	if !waitForRateLimitCooldown(ctx, &w.rateLimit, "thumb", w.Drive) {
+		return
+	}
 	w.process(ctx, v)
-}
-
-func (w *Worker) generationState() *sharedGenerationState {
-	if w.shared == nil {
-		w.shared = newSharedGenerationState()
-	}
-	if w.shared.rateLimit == nil {
-		w.shared.rateLimit = &rateLimitState{}
-	}
-	return w.shared
-}
-
-func (w *ThumbWorker) generationState() *sharedGenerationState {
-	if w.shared == nil {
-		w.shared = newSharedGenerationState()
-	}
-	if w.shared.rateLimit == nil {
-		w.shared.rateLimit = &rateLimitState{}
-	}
-	return w.shared
-}
-
-func waitForGenerationTurn(ctx context.Context, state *sharedGenerationState, label string, drive drives.Drive) (func(), bool) {
-	if state == nil {
-		state = newSharedGenerationState()
-	}
-	if state.rateLimit == nil {
-		state.rateLimit = &rateLimitState{}
-	}
-	for {
-		if !waitForRateLimitCooldown(ctx, state.rateLimit, label, drive) {
-			return nil, false
-		}
-		state.gate.Lock()
-		if _, ok := state.rateLimit.coolingUntil(time.Now()); ok {
-			state.gate.Unlock()
-			continue
-		}
-		return state.gate.Unlock, true
-	}
 }
 
 func waitForRateLimitCooldown(ctx context.Context, state *rateLimitState, label string, drive drives.Drive) bool {
@@ -1212,7 +1138,7 @@ func waitForRateLimitCooldown(ctx context.Context, state *rateLimitState, label 
 }
 
 func (w *Worker) skipIfRateLimited(v *catalog.Video) bool {
-	until, ok, shouldLog := w.generationState().rateLimit.active(time.Now())
+	until, ok, shouldLog := w.rateLimit.active(time.Now())
 	if !ok {
 		return false
 	}
@@ -1230,7 +1156,7 @@ func (w *Worker) pauseForRateLimit(err error, step, title string) bool {
 	if retryAfter <= 0 {
 		retryAfter = w.RateLimitCooldown
 	}
-	until := w.generationState().rateLimit.pause(time.Now(), retryAfter)
+	until := w.rateLimit.pause(time.Now(), retryAfter)
 	log.Printf("[preview] drive=%s rate-limited until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
 	return true
 }
@@ -1242,13 +1168,13 @@ func (w *Worker) pauseForRecoverableError(err error, step, title string) bool {
 	if !driveErrorShouldCooldown(w.Drive, err) {
 		return false
 	}
-	until := w.generationState().rateLimit.pause(time.Now(), w.RateLimitCooldown)
+	until := w.rateLimit.pause(time.Now(), w.RateLimitCooldown)
 	log.Printf("[preview] drive=%s transient media source error until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
 	return true
 }
 
 func (w *ThumbWorker) skipIfRateLimited(v *catalog.Video) bool {
-	until, ok, shouldLog := w.generationState().rateLimit.active(time.Now())
+	until, ok, shouldLog := w.rateLimit.active(time.Now())
 	if !ok {
 		return false
 	}
@@ -1266,7 +1192,7 @@ func (w *ThumbWorker) pauseForRateLimit(err error, step, title string) bool {
 	if retryAfter <= 0 {
 		retryAfter = w.RateLimitCooldown
 	}
-	until := w.generationState().rateLimit.pause(time.Now(), retryAfter)
+	until := w.rateLimit.pause(time.Now(), retryAfter)
 	log.Printf("[thumb] drive=%s rate-limited until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
 	return true
 }
@@ -1278,7 +1204,7 @@ func (w *ThumbWorker) pauseForRecoverableError(err error, step, title string) bo
 	if !driveErrorShouldCooldown(w.Drive, err) {
 		return false
 	}
-	until := w.generationState().rateLimit.pause(time.Now(), w.RateLimitCooldown)
+	until := w.rateLimit.pause(time.Now(), w.RateLimitCooldown)
 	log.Printf("[thumb] drive=%s transient media source error until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
 	return true
 }
@@ -1302,6 +1228,11 @@ func driveErrorShouldCooldown(d drives.Drive, err error) bool {
 func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) {
 	if w.skipIfRateLimited(v) {
 		return
+	}
+	if current, err := w.Catalog.GetVideo(ctx, v.ID); err == nil {
+		if current.ThumbnailURL != "" {
+			return
+		}
 	}
 	link, err := w.Drive.StreamURL(ctx, v.FileID)
 	if err != nil {
