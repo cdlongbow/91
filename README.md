@@ -123,4 +123,4 @@ FRONTEND_PORT=8080 sudo -E bash install.sh
 
 感谢开源项目 OpenList。
 
-感谢 LinuxDo 社区，学 AI 上 L 站。
+感谢 <a href="https://linux.do/">LinuxDo</a> 社区，学 AI 上 L 站。
