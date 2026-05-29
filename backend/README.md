@@ -128,6 +128,16 @@ OneDrive 按 OpenList 默认应用方式调用 `https://api.oplist.org/onedrive/
 
 标签分隔符支持 `, ， 、` 和空格。解析结果会和系统标签池匹配，常见番号类噪声会归并到 `AV` 等系统标签，避免把每个番号都变成独立标签。解析结果可在管理后台覆盖。
 
+## 视频去重
+
+项目有三层去重：
+
+1. 同一网盘同一文件按 `(drive_id, file_id)` 形成稳定视频 ID，重复扫描只更新同一行。
+2. 扫描时优先按网盘侧 `content_hash` 去重；没有 hash 时退化为 `file_name + size_bytes`。
+3. 扫描、爬虫或本地上传完成后，后台指纹 worker 会异步读取视频的少量 Range 片段，生成 `sampled_sha256`。前台列表、首页、搜索、推荐会按 `size_bytes + sampled_sha256` 只展示最早入库的 canonical 视频。
+
+`sampled_sha256` 是文件级去重：适合识别同一个视频文件被复制到 115 / PikPak / OneDrive 等不同网盘的情况。它不会删除任何网盘文件，也不用于识别转码、裁剪、加水印后的同源视频。
+
 ## 管理能力
 
 - `/admin/drives`：新增、编辑、删除网盘，触发扫描。

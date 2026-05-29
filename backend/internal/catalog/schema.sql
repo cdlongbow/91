@@ -5,6 +5,9 @@ CREATE TABLE IF NOT EXISTS videos (
     file_id          TEXT NOT NULL,
     file_name        TEXT DEFAULT '',           -- 网盘侧原始文件名，用于同名同大小去重
     content_hash     TEXT DEFAULT '',
+    sampled_sha256   TEXT DEFAULT '',           -- 跨网盘统一采样指纹（size + sampled bytes）
+    fingerprint_status TEXT DEFAULT 'pending',  -- pending / ready / failed
+    fingerprint_error  TEXT DEFAULT '',
     parent_id        TEXT,
     title            TEXT NOT NULL,
     author           TEXT,

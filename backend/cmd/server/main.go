@@ -32,6 +32,7 @@ import (
 	"github.com/video-site/backend/internal/drives/quark"
 	"github.com/video-site/backend/internal/drives/spider91"
 	"github.com/video-site/backend/internal/drives/wopan"
+	"github.com/video-site/backend/internal/fingerprint"
 	"github.com/video-site/backend/internal/nightly"
 	"github.com/video-site/backend/internal/preview"
 	"github.com/video-site/backend/internal/proxy"
@@ -63,12 +64,13 @@ func main() {
 	defer cat.Close()
 
 	app := &App{
-		cfg:              cfg,
-		cat:              cat,
-		registry:         proxy.NewRegistry(),
-		workers:          make(map[string]*preview.Worker),
-		thumbWorkers:     make(map[string]*preview.ThumbWorker),
-		spider91Crawlers: make(map[string]*spider91.Crawler),
+		cfg:                cfg,
+		cat:                cat,
+		registry:           proxy.NewRegistry(),
+		workers:            make(map[string]*preview.Worker),
+		thumbWorkers:       make(map[string]*preview.ThumbWorker),
+		fingerprintWorkers: make(map[string]*fingerprint.Worker),
+		spider91Crawlers:   make(map[string]*spider91.Crawler),
 	}
 	app.proxy = proxy.New(app.registry)
 	app.spider91Migrator = spider91migrate.New(spider91migrate.Config{
@@ -272,10 +274,11 @@ type App struct {
 	registry *proxy.Registry
 	proxy    *proxy.Proxy
 
-	mu           sync.Mutex
-	workers      map[string]*preview.Worker
-	thumbWorkers map[string]*preview.ThumbWorker
-	cancels      map[string]context.CancelFunc
+	mu                 sync.Mutex
+	workers            map[string]*preview.Worker
+	thumbWorkers       map[string]*preview.ThumbWorker
+	fingerprintWorkers map[string]*fingerprint.Worker
+	cancels            map[string]context.CancelFunc
 	// spider91Crawlers 按 driveID 索引，每个 spider91 drive 独立一个 Crawler
 	spider91Crawlers map[string]*spider91.Crawler
 
@@ -579,12 +582,14 @@ func (a *App) attachDrive(ctx context.Context, d *catalog.Drive) error {
 	})
 	worker := preview.NewWorker(gen, a.cat, drv)
 	thumbWorker := preview.NewThumbWorker(gen, a.cat, drv)
+	fingerprintWorker := fingerprint.NewWorker(a.cat, drv, fingerprint.Config{})
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	go worker.Run(workerCtx)
 	go thumbWorker.Run(workerCtx)
+	go fingerprintWorker.Run(workerCtx)
 
-	a.registerPreviewWorkers(ctx, d.ID, worker, thumbWorker, cancel)
+	a.registerPreviewWorkers(ctx, d.ID, worker, thumbWorker, fingerprintWorker, cancel)
 
 	// spider91 driver 还需要一个 crawler，挂在专用 map 里供 crawlerLoop 调用
 	if sd, ok := drv.(*spider91.Driver); ok {
@@ -611,12 +616,14 @@ func (a *App) attachLocalUpload(ctx context.Context) error {
 	})
 	worker := preview.NewWorker(gen, a.cat, drv)
 	thumbWorker := preview.NewThumbWorker(gen, a.cat, drv)
+	fingerprintWorker := fingerprint.NewWorker(a.cat, drv, fingerprint.Config{})
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	go worker.Run(workerCtx)
 	go thumbWorker.Run(workerCtx)
+	go fingerprintWorker.Run(workerCtx)
 
-	a.registerPreviewWorkers(ctx, drv.ID(), worker, thumbWorker, cancel)
+	a.registerPreviewWorkers(ctx, drv.ID(), worker, thumbWorker, fingerprintWorker, cancel)
 	return nil
 }
 
@@ -708,7 +715,7 @@ func (a *App) attachSpider91Crawler(d *catalog.Drive, drv *spider91.Driver) {
 	}()
 }
 
-func (a *App) registerPreviewWorkers(ctx context.Context, driveID string, worker *preview.Worker, thumbWorker *preview.ThumbWorker, cancel context.CancelFunc) {
+func (a *App) registerPreviewWorkers(ctx context.Context, driveID string, worker *preview.Worker, thumbWorker *preview.ThumbWorker, fingerprintWorker *fingerprint.Worker, cancel context.CancelFunc) {
 	a.mu.Lock()
 	if a.cancels == nil {
 		a.cancels = make(map[string]context.CancelFunc)
@@ -718,6 +725,9 @@ func (a *App) registerPreviewWorkers(ctx context.Context, driveID string, worker
 	}
 	if a.thumbWorkers == nil {
 		a.thumbWorkers = make(map[string]*preview.ThumbWorker)
+	}
+	if a.fingerprintWorkers == nil {
+		a.fingerprintWorkers = make(map[string]*fingerprint.Worker)
 	}
 	if old, ok := a.cancels[driveID]; ok && old != nil {
 		old()
@@ -731,6 +741,11 @@ func (a *App) registerPreviewWorkers(ctx context.Context, driveID string, worker
 		a.thumbWorkers[driveID] = thumbWorker
 	} else {
 		delete(a.thumbWorkers, driveID)
+	}
+	if fingerprintWorker != nil {
+		a.fingerprintWorkers[driveID] = fingerprintWorker
+	} else {
+		delete(a.fingerprintWorkers, driveID)
 	}
 	if cancel != nil {
 		a.cancels[driveID] = cancel
@@ -830,6 +845,27 @@ func (a *App) enqueueThumbnails(ctx context.Context, driveID string, w *preview.
 	}
 }
 
+func (a *App) enqueueFingerprints(ctx context.Context, driveID string, w *fingerprint.Worker) {
+	if w == nil {
+		return
+	}
+	pending, err := a.cat.ListVideosNeedingFingerprint(ctx, driveID, 0)
+	if err != nil {
+		log.Printf("[fingerprint] list pending %s: %v", driveID, err)
+		return
+	}
+	if len(pending) == 0 {
+		return
+	}
+	log.Printf("[fingerprint] enqueue %d videos for drive=%s", len(pending), driveID)
+	for _, v := range pending {
+		if !w.EnqueueBlocking(ctx, v) {
+			log.Printf("[fingerprint] enqueue canceled for drive=%s", driveID)
+			return
+		}
+	}
+}
+
 func (a *App) detachDrive(id string) {
 	a.registry.Remove(id)
 	a.mu.Lock()
@@ -839,6 +875,7 @@ func (a *App) detachDrive(id string) {
 	}
 	delete(a.workers, id)
 	delete(a.thumbWorkers, id)
+	delete(a.fingerprintWorkers, id)
 	delete(a.spider91Crawlers, id)
 	a.mu.Unlock()
 }
@@ -942,6 +979,7 @@ func (a *App) runScan(ctx context.Context, driveID string) {
 	a.mu.Lock()
 	worker := a.workers[driveID]
 	thumbWorker := a.thumbWorkers[driveID]
+	fingerprintWorker := a.fingerprintWorkers[driveID]
 	a.mu.Unlock()
 
 	var onNew func(v *catalog.Video)
@@ -994,6 +1032,7 @@ func (a *App) runScan(ctx context.Context, driveID string) {
 		}
 	}
 	a.enqueueDriveGeneration(ctx, driveID, worker, thumbWorker)
+	a.enqueueFingerprints(ctx, driveID, fingerprintWorker)
 }
 
 func (a *App) cleanupMissingDriveVideos(ctx context.Context, driveID string, liveFileIDs map[string]struct{}, visitedDirIDs map[string]struct{}, fullDriveScan bool) (int, error) {
@@ -1089,6 +1128,7 @@ func (a *App) enqueueUploadedVideo(ctx context.Context, v *catalog.Video) {
 	a.mu.Lock()
 	worker := a.workers[v.DriveID]
 	thumbWorker := a.thumbWorkers[v.DriveID]
+	fingerprintWorker := a.fingerprintWorkers[v.DriveID]
 	a.mu.Unlock()
 
 	if thumbWorker != nil && v.ThumbnailURL == "" {
@@ -1096,6 +1136,9 @@ func (a *App) enqueueUploadedVideo(ctx context.Context, v *catalog.Video) {
 	}
 	if worker != nil && a.teaserEnabledForDrive(ctx, v.DriveID) {
 		worker.Enqueue(v)
+	}
+	if fingerprintWorker != nil {
+		fingerprintWorker.Enqueue(v)
 	}
 }
 
@@ -1348,8 +1391,10 @@ func (a *App) runSpider91Crawl(ctx context.Context, driveID string) {
 	a.mu.Lock()
 	worker := a.workers[driveID]
 	thumbWorker := a.thumbWorkers[driveID]
+	fingerprintWorker := a.fingerprintWorkers[driveID]
 	a.mu.Unlock()
 	a.enqueueDriveGeneration(ctx, driveID, worker, thumbWorker)
+	a.enqueueFingerprints(ctx, driveID, fingerprintWorker)
 }
 
 // spider91IntCred 解析 credentials 中的整数字段，缺省时返回 def。

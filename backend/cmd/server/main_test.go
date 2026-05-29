@@ -53,7 +53,7 @@ func TestRegisterPreviewWorkerBackfillsPendingWhenDriveTeaserEnabled(t *testing.
 	worker := preview.NewWorker(&serverFakeTeaserGenerator{}, cat, &serverFakeDrive{})
 	go worker.Run(ctx)
 
-	app.registerPreviewWorkers(ctx, "drive-id", worker, nil, func() {})
+	app.registerPreviewWorkers(ctx, "drive-id", worker, nil, nil, func() {})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -117,7 +117,7 @@ func TestRegisterPreviewWorkersGenerateThumbnailsBeforePreviews(t *testing.T) {
 	go worker.Run(ctx)
 	go thumbWorker.Run(ctx)
 
-	app.registerPreviewWorkers(ctx, "drive-id", worker, thumbWorker, func() {})
+	app.registerPreviewWorkers(ctx, "drive-id", worker, thumbWorker, nil, func() {})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -205,7 +205,7 @@ func TestFailedThumbnailsDoNotBlockPreviewGeneration(t *testing.T) {
 	go worker.Run(ctx)
 	go thumbWorker.Run(ctx)
 
-	app.registerPreviewWorkers(ctx, "drive-id", worker, thumbWorker, func() {})
+	app.registerPreviewWorkers(ctx, "drive-id", worker, thumbWorker, nil, func() {})
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
