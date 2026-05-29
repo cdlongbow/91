@@ -149,6 +149,31 @@ func TestServeStreamPikPakSetsRedirectHeaders(t *testing.T) {
 	}
 }
 
+func TestServeStreamRedirectsOneDrive(t *testing.T) {
+	reg := NewRegistry()
+	drv := &proxyFakeSimpleDrive{
+		kind: "onedrive",
+		url:  "https://public.onedrive.example/video.mp4",
+	}
+	reg.Set("onedrive", drv)
+
+	p := New(reg)
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/onedrive/file-1", nil)
+	rr := httptest.NewRecorder()
+
+	p.ServeStream(rr, req, "onedrive", "file-1")
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusFound)
+	}
+	if got := rr.Header().Get("Location"); got != "https://public.onedrive.example/video.mp4" {
+		t.Fatalf("Location = %q", got)
+	}
+	if drv.calls != 1 {
+		t.Fatalf("link calls = %d, want 1", drv.calls)
+	}
+}
+
 func requestPikPak(t *testing.T, p *Proxy, driveID, fileID, ua string) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/p/stream/"+driveID+"/"+fileID, nil)
@@ -192,3 +217,36 @@ func (d *proxyFakePikPakDrive) EnsureDir(context.Context, string) (string, error
 	return "", drives.ErrNotSupported
 }
 func (d *proxyFakePikPakDrive) RootID() string { return "0" }
+
+type proxyFakeSimpleDrive struct {
+	kind  string
+	url   string
+	calls int
+}
+
+func (d *proxyFakeSimpleDrive) Kind() string { return d.kind }
+func (d *proxyFakeSimpleDrive) ID() string   { return d.kind }
+func (d *proxyFakeSimpleDrive) Init(context.Context) error {
+	return nil
+}
+func (d *proxyFakeSimpleDrive) List(context.Context, string) ([]drives.Entry, error) {
+	return nil, drives.ErrNotSupported
+}
+func (d *proxyFakeSimpleDrive) Stat(context.Context, string) (*drives.Entry, error) {
+	return nil, drives.ErrNotSupported
+}
+func (d *proxyFakeSimpleDrive) StreamURL(context.Context, string) (*drives.StreamLink, error) {
+	d.calls++
+	return &drives.StreamLink{
+		URL:     d.url,
+		Headers: http.Header{},
+		Expires: time.Now().Add(10 * time.Minute),
+	}, nil
+}
+func (d *proxyFakeSimpleDrive) Upload(context.Context, string, string, io.Reader, int64) (string, error) {
+	return "", drives.ErrNotSupported
+}
+func (d *proxyFakeSimpleDrive) EnsureDir(context.Context, string) (string, error) {
+	return "", drives.ErrNotSupported
+}
+func (d *proxyFakeSimpleDrive) RootID() string { return "0" }

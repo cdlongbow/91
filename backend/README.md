@@ -107,7 +107,7 @@ go run ./cmd/server 后端 9192
 | p115   | `cookie`（形如 `UID=...; CID=...; SEID=...; KID=...`）         |
 | pikpak | `username`、`password`，可选 `refresh_token`、`captcha_token`、`device_id`、`platform`、`disable_media_link` |
 | wopan  | `access_token`、`refresh_token`，可选 `family_id`              |
-| onedrive | `refresh_token`，可选 `access_token`、`api_url_address`、`region`、`is_sharepoint`、`site_id` |
+| onedrive | `refresh_token` |
 
 ### PikPak 速度说明
 
@@ -115,7 +115,7 @@ go run ./cmd/server 后端 9192
 
 当前服务器同时存在 sing-box TUN 透明代理，PikPak 默认出站会被 `tun0` 接管；但强制直连物理网卡并没有更快，慢速的主要差异来自 PikPak 取链方式。media/cache CDN 节点仍有波动，偶尔可能遇到慢节点；如果播放变慢，可重新获取直链或重新挂载 PikPak 后再测。
 
-OneDrive 按 OpenList 默认方式调用 `https://api.oplist.org/onedrive/renewapi` 在线刷新 token，不需要配置 Azure 应用的 `client_id` / `client_secret` / `redirect_uri`。OpenList 代刷得到的 refresh token 可以直接填到本项目。普通 OneDrive 的 `rootId` / `scanRootId` 可填 `root`；SharePoint 文档库需要额外设置 `is_sharepoint=true` 和 `site_id`。
+OneDrive 按 OpenList 默认应用方式调用 `https://api.oplist.org/onedrive/renewapi` 在线刷新 token，不需要配置 Azure 应用的 `client_id` / `client_secret` / `redirect_uri`。后台新建 OneDrive 时只需要填 OpenList 代刷得到的 `refresh_token`；服务端会默认挂载根目录并自动回写新 token。
 
 ## 文件名约定
 

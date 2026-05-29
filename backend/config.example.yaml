@@ -67,6 +67,4 @@ preview:
 #   root_id: "root"
 #   params:
 #     refresh_token: "..."
-#     api_url_address: "https://api.oplist.org/onedrive/renewapi"
-#     region: "global"
 drives: []

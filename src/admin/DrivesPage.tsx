@@ -837,6 +837,7 @@ function DriveForm({
 }) {
   const fields = useMemo(() => credentialFields(form.kind), [form.kind]);
   const help = credentialHelp(form.kind, isEdit);
+  const showDirectoryFields = form.kind !== "spider91" && form.kind !== "onedrive";
 
   function set<K extends keyof FormState>(k: K, v: FormState[K]) {
     onChange({ ...form, [k]: v });
@@ -879,7 +880,7 @@ function DriveForm({
           <option value="onedrive">OneDrive</option>
         </select>
       </div>
-      {form.kind !== "spider91" && (
+      {showDirectoryFields && (
         <>
           <div className="admin-form__row">
             <label>根目录 ID</label>
@@ -998,7 +999,7 @@ function credentialHelp(kind: Kind, isEdit: boolean): string {
     case "wopan":
       return `需要 access_token 和 refresh_token。后续会加扫码/短信登录入口，第一版只能手工粘贴。${note}`;
     case "onedrive":
-      return `按 OpenList 默认方式，通过 api.oplist.org 在线刷新 token。只需要 refresh_token；保存后会自动回写新的 access_token / refresh_token。${note}`;
+      return `按 OpenList 默认应用在线挂载，只需要 refresh_token；保存时会自动刷新并保存 token。${note}`;
     case "spider91":
       return "91 爬虫会把定时抓取到的视频和封面先保存到本机，并作为一个视频来源接入站点；它不是外部网盘，不需要填写 Cookie 或目录 ID。后续流水线会把较早的视频上传到你选择的 115 / PikPak 目标盘。";
     default:
@@ -1105,35 +1106,6 @@ function credentialFields(kind: Kind): Array<{
           placeholder: "OpenList OneDrive refresh_token",
           multiline: true,
           required: true,
-        },
-        {
-          key: "access_token",
-          label: "access_token（可选）",
-          placeholder: "留空也可以，保存时会在线刷新",
-          multiline: true,
-        },
-        {
-          key: "api_url_address",
-          label: "api_url_address（可选）",
-          placeholder: "https://api.oplist.org/onedrive/renewapi",
-          help: "默认使用 OpenList 的在线刷新 API；除非你有自建兼容服务，否则留空。",
-        },
-        {
-          key: "region",
-          label: "region（可选）",
-          placeholder: "global（可选：global / cn / us / de）",
-          help: "默认 global；世纪互联填 cn，美国政府云填 us，德国云填 de。",
-        },
-        {
-          key: "is_sharepoint",
-          label: "is_sharepoint（可选）",
-          placeholder: "false",
-          help: "普通 OneDrive 留空或 false；SharePoint 文档库填 true，并填写 site_id。",
-        },
-        {
-          key: "site_id",
-          label: "site_id（SharePoint 必填）",
-          placeholder: "SharePoint site id",
         },
       ];
     case "spider91":
