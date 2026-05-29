@@ -41,35 +41,38 @@ func (c *Catalog) Close() error { return c.db.Close() }
 // ---------- Video ----------
 
 type Video struct {
-	ID              string    `json:"id"`
-	DriveID         string    `json:"driveId"`
-	FileID          string    `json:"fileId"`
-	FileName        string    `json:"fileName"`
-	ContentHash     string    `json:"contentHash"`
-	ParentID        string    `json:"parentId"`
-	Title           string    `json:"title"`
-	Author          string    `json:"author"`
-	Tags            []string  `json:"tags"`
-	DurationSeconds int       `json:"durationSeconds"`
-	Size            int64     `json:"size"`
-	Ext             string    `json:"ext"`
-	Quality         string    `json:"quality"`
-	ThumbnailURL    string    `json:"thumbnailUrl"`
-	PreviewFileID   string    `json:"previewFileId"`
-	PreviewLocal    string    `json:"previewLocal"`
-	PreviewStatus   string    `json:"previewStatus"`
-	Views           int       `json:"views"`
-	Favorites       int       `json:"favorites"`
-	Comments        int       `json:"comments"`
-	Likes           int       `json:"likes"`
-	Dislikes        int       `json:"dislikes"`
-	Category        string    `json:"category"`
-	Hidden          bool      `json:"hidden"`
-	Badges          []string  `json:"badges"`
-	Description     string    `json:"description"`
-	PublishedAt     time.Time `json:"publishedAt"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	ID                string    `json:"id"`
+	DriveID           string    `json:"driveId"`
+	FileID            string    `json:"fileId"`
+	FileName          string    `json:"fileName"`
+	ContentHash       string    `json:"contentHash"`
+	SampledSHA256     string    `json:"sampledSha256"`
+	FingerprintStatus string    `json:"fingerprintStatus"`
+	FingerprintError  string    `json:"fingerprintError"`
+	ParentID          string    `json:"parentId"`
+	Title             string    `json:"title"`
+	Author            string    `json:"author"`
+	Tags              []string  `json:"tags"`
+	DurationSeconds   int       `json:"durationSeconds"`
+	Size              int64     `json:"size"`
+	Ext               string    `json:"ext"`
+	Quality           string    `json:"quality"`
+	ThumbnailURL      string    `json:"thumbnailUrl"`
+	PreviewFileID     string    `json:"previewFileId"`
+	PreviewLocal      string    `json:"previewLocal"`
+	PreviewStatus     string    `json:"previewStatus"`
+	Views             int       `json:"views"`
+	Favorites         int       `json:"favorites"`
+	Comments          int       `json:"comments"`
+	Likes             int       `json:"likes"`
+	Dislikes          int       `json:"dislikes"`
+	Category          string    `json:"category"`
+	Hidden            bool      `json:"hidden"`
+	Badges            []string  `json:"badges"`
+	Description       string    `json:"description"`
+	PublishedAt       time.Time `json:"publishedAt"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
 func (c *Catalog) UpsertVideo(ctx context.Context, v *Video) error {
@@ -108,6 +111,18 @@ ON CONFLICT(id) DO UPDATE SET
   content_hash    = CASE
                       WHEN excluded.content_hash != '' THEN excluded.content_hash
                       ELSE videos.content_hash
+                    END,
+  sampled_sha256  = CASE
+                      WHEN videos.size_bytes != excluded.size_bytes THEN ''
+                      ELSE videos.sampled_sha256
+                    END,
+  fingerprint_status = CASE
+                      WHEN videos.size_bytes != excluded.size_bytes THEN 'pending'
+                      ELSE COALESCE(videos.fingerprint_status, 'pending')
+                    END,
+  fingerprint_error = CASE
+                      WHEN videos.size_bytes != excluded.size_bytes THEN ''
+                      ELSE COALESCE(videos.fingerprint_error, '')
                     END,
   duration_seconds= excluded.duration_seconds,
   size_bytes      = excluded.size_bytes,
@@ -668,6 +683,60 @@ func (c *Catalog) FindVideoByFileSignature(ctx context.Context, fileName string,
 	return scanVideo(row)
 }
 
+func (c *Catalog) ListVideosNeedingFingerprint(ctx context.Context, driveID string, limit int) ([]*Video, error) {
+	if limit <= 0 {
+		limit = 10000
+	}
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT `+allVideoCols+` FROM videos
+		 WHERE drive_id = ?
+		   AND size_bytes > 0
+		   AND COALESCE(sampled_sha256, '') = ''
+		   AND COALESCE(fingerprint_status, 'pending') = 'pending'
+		   AND COALESCE(hidden, 0) = 0
+		 ORDER BY created_at ASC, id ASC
+		 LIMIT ?`,
+		driveID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Video
+	for rows.Next() {
+		v, err := scanVideo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (c *Catalog) UpdateVideoFingerprint(ctx context.Context, id, sampledSHA256, status, errText string) error {
+	sampledSHA256 = normalizeContentHash(sampledSHA256)
+	if status == "" {
+		status = "pending"
+	}
+	if len(errText) > 500 {
+		errText = errText[:500]
+	}
+	res, err := c.db.ExecContext(ctx,
+		`UPDATE videos
+		    SET sampled_sha256 = ?,
+		        fingerprint_status = ?,
+		        fingerprint_error = ?,
+		        updated_at = ?
+		  WHERE id = ?`,
+		sampledSHA256, status, errText, time.Now().UnixMilli(), id)
+	if err != nil {
+		return err
+	}
+	if rows, err := res.RowsAffected(); err == nil && rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 type ListParams struct {
 	Keyword               string
 	DriveID               string
@@ -1171,7 +1240,9 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.upd
 // ---------- helpers ----------
 
 const allVideoCols = `
-id, drive_id, file_id, COALESCE(file_name, ''), COALESCE(content_hash, ''), COALESCE(parent_id, ''), title, COALESCE(author, ''), COALESCE(tags, '[]'),
+id, drive_id, file_id, COALESCE(file_name, ''), COALESCE(content_hash, ''),
+COALESCE(sampled_sha256, ''), COALESCE(fingerprint_status, 'pending'), COALESCE(fingerprint_error, ''),
+COALESCE(parent_id, ''), title, COALESCE(author, ''), COALESCE(tags, '[]'),
 duration_seconds, size_bytes, COALESCE(ext, ''), COALESCE(quality, ''), COALESCE(thumbnail_url, ''),
 COALESCE(preview_file_id, ''), COALESCE(preview_local, ''), COALESCE(preview_status, 'pending'),
 views, favorites, comments, likes, dislikes,
@@ -1185,6 +1256,20 @@ const uniqueVideoWhereSQL = `((COALESCE(videos.content_hash, '') = ''
 			FROM videos AS dup
 			WHERE dup.content_hash = videos.content_hash
 			  AND COALESCE(dup.content_hash, '') != ''
+			  AND (
+				dup.created_at < videos.created_at
+				OR (dup.created_at = videos.created_at AND dup.id < videos.id)
+			  )
+		))
+	AND (COALESCE(videos.sampled_sha256, '') = ''
+		OR videos.size_bytes <= 0
+		OR NOT EXISTS (
+			SELECT 1
+			FROM videos AS dup
+			WHERE dup.sampled_sha256 = videos.sampled_sha256
+			  AND dup.size_bytes = videos.size_bytes
+			  AND COALESCE(dup.sampled_sha256, '') != ''
+			  AND dup.size_bytes > 0
 			  AND (
 				dup.created_at < videos.created_at
 				OR (dup.created_at = videos.created_at AND dup.id < videos.id)
@@ -1215,7 +1300,9 @@ func scanVideo(row rowScanner) (*Video, error) {
 	var publishedAt, createdAt, updatedAt int64
 	var hidden int
 	err := row.Scan(
-		&v.ID, &v.DriveID, &v.FileID, &v.FileName, &v.ContentHash, &v.ParentID, &v.Title, &v.Author, &tagsJSON,
+		&v.ID, &v.DriveID, &v.FileID, &v.FileName, &v.ContentHash,
+		&v.SampledSHA256, &v.FingerprintStatus, &v.FingerprintError,
+		&v.ParentID, &v.Title, &v.Author, &tagsJSON,
 		&v.DurationSeconds, &v.Size, &v.Ext, &v.Quality, &v.ThumbnailURL,
 		&v.PreviewFileID, &v.PreviewLocal, &v.PreviewStatus,
 		&v.Views, &v.Favorites, &v.Comments, &v.Likes, &v.Dislikes,
