@@ -83,6 +83,15 @@ sudo bash install.sh
 
 同时也保留 `video-site-91` 作为同等别名。
 
+旧版本用户升级说明：
+
+如果你是在 `v0.0.2` 之前部署的项目，系统里可能还保留旧的 `91` 管理脚本。旧脚本直接运行 `91 update` 可能更新失败。先执行下面的一次性修复命令，后续再使用 `91 update` 即可：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nianzhibai/91/main/install.sh -o /tmp/install-91.sh
+sudo bash /tmp/install-91.sh update
+```
+
 想换端口：
 
 ```bash
