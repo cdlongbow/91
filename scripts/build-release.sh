@@ -61,6 +61,7 @@ build_package() {
   )
 
   cp "$ROOT_DIR/backend/config.example.yaml" "$work/config.example.yaml"
+  cp "$ROOT_DIR/install.sh" "$work/install.sh"
   cp -R "$ROOT_DIR/dist" "$work/dist"
   mkdir -p "$work/91VideoSpider"
   cp "$ROOT_DIR/91VideoSpider/spider_91porn.py" "$work/91VideoSpider/spider_91porn.py"
@@ -69,10 +70,11 @@ build_package() {
 $APP_NAME $VERSION
 
 This is a prebuilt release package.
-Use install.sh from the repository to install it on a Linux server.
+Use install.sh in this package or from the repository to install it on a Linux server.
 EOF
 
   chmod +x "$work/server"
+  chmod +x "$work/install.sh"
   tar -C "$OUT_DIR/.work" -czf "$OUT_DIR/$artifact.tar.gz" "$artifact"
   log "wrote $OUT_DIR/$artifact.tar.gz"
 }

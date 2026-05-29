@@ -11,6 +11,10 @@ VERSION="${VERSION:-latest}"
 GH_PROXY="${GH_PROXY:-}"
 CONFIGURE_UFW="${CONFIGURE_UFW:-1}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
+SELF_UPDATE="${SELF_UPDATE:-1}"
+INSTALL_SCRIPT_REF="${INSTALL_SCRIPT_REF:-main}"
+INSTALL_SCRIPT_URL="${INSTALL_SCRIPT_URL:-${GH_PROXY}https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALL_SCRIPT_REF}/install.sh}"
+VIDEO_SITE_SKIP_SELF_UPDATE="${VIDEO_SITE_SKIP_SELF_UPDATE:-0}"
 VERSION_FILE="$INSTALL_PATH/.version"
 MANAGER_PATH="/usr/local/sbin/${APP_NAME}-manager"
 COMMAND_LINK="/usr/local/bin/91"
@@ -47,7 +51,7 @@ Default action:
 
 Actions:
   install    Install to $INSTALL_PATH
-  update     Download latest release and replace program files, keeping config/data
+  update     Refresh manager script, download latest release, and keep config/data
   restart    Restart service
   stop       Stop service
   status     Show service status
@@ -62,6 +66,9 @@ Options via environment:
   GH_PROXY=$GH_PROXY
   INSTALL_DEPS=$INSTALL_DEPS
   CONFIGURE_UFW=$CONFIGURE_UFW
+  SELF_UPDATE=$SELF_UPDATE
+  INSTALL_SCRIPT_REF=$INSTALL_SCRIPT_REF
+  INSTALL_SCRIPT_URL=$INSTALL_SCRIPT_URL
 
 Examples:
   sudo bash install.sh
@@ -158,6 +165,30 @@ download_file() {
   return 1
 }
 
+backup_install_files() {
+  local backup="$1"
+  mkdir -p "$backup"
+  cp -a "$INSTALL_PATH/server" "$backup/server"
+  for item in dist config.example.yaml 91VideoSpider config.yaml .version; do
+    if [[ -e "$INSTALL_PATH/$item" ]]; then
+      cp -a "$INSTALL_PATH/$item" "$backup/$item"
+    fi
+  done
+}
+
+restore_install_files() {
+  local backup="$1"
+  mkdir -p "$INSTALL_PATH"
+  cp -a "$backup/server" "$INSTALL_PATH/server"
+  for item in dist config.example.yaml 91VideoSpider config.yaml .version; do
+    rm -rf "${INSTALL_PATH:?}/$item"
+    if [[ -e "$backup/$item" ]]; then
+      cp -a "$backup/$item" "$INSTALL_PATH/$item"
+    fi
+  done
+  chmod +x "$INSTALL_PATH/server"
+}
+
 prepare_config() {
   local cfg="$INSTALL_PATH/config.yaml"
   local example="$INSTALL_PATH/config.example.yaml"
@@ -217,12 +248,70 @@ EOF
 install_cli() {
   local src
   src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-  if [[ -f "$src" ]]; then
-    cp "$src" "$MANAGER_PATH"
-    chmod 755 "$MANAGER_PATH"
-    ln -sf "$MANAGER_PATH" "$COMMAND_LINK"
-    ln -sf "$MANAGER_PATH" "$APP_COMMAND_LINK"
+  install_cli_from_file "$src"
+}
+
+install_cli_from_file() {
+  local src="$1"
+  local tmp
+  [[ -f "$src" ]] || return 0
+  mkdir -p "$(dirname "$MANAGER_PATH")" "$(dirname "$COMMAND_LINK")" "$(dirname "$APP_COMMAND_LINK")"
+  tmp="${MANAGER_PATH}.tmp.$$"
+  cp "$src" "$tmp"
+  chmod 755 "$tmp"
+  mv "$tmp" "$MANAGER_PATH"
+  ln -sfn "$MANAGER_PATH" "$COMMAND_LINK"
+  ln -sfn "$MANAGER_PATH" "$APP_COMMAND_LINK"
+}
+
+self_update_manager() {
+  [[ "$SELF_UPDATE" == "1" ]] || return 1
+  [[ "$VIDEO_SITE_SKIP_SELF_UPDATE" != "1" ]] || return 1
+  [[ -n "$INSTALL_SCRIPT_URL" ]] || return 1
+
+  local tmp
+  tmp="$(mktemp)"
+  log "checking latest manager script"
+  if ! download_file "$INSTALL_SCRIPT_URL" "$tmp"; then
+    warn "manager self-update skipped: cannot download $INSTALL_SCRIPT_URL"
+    rm -f "$tmp"
+    return 1
   fi
+  if ! bash -n "$tmp"; then
+    warn "manager self-update skipped: downloaded script has syntax errors"
+    rm -f "$tmp"
+    return 1
+  fi
+  if [[ -f "$MANAGER_PATH" ]] && cmp -s "$tmp" "$MANAGER_PATH"; then
+    rm -f "$tmp"
+    return 1
+  fi
+
+  install_cli_from_file "$tmp"
+  rm -f "$tmp"
+  log "manager script updated"
+  return 0
+}
+
+exec_latest_manager_update() {
+  local env_args=(
+    "VIDEO_SITE_SKIP_SELF_UPDATE=1"
+    "APP_NAME=$APP_NAME"
+    "GITHUB_REPO=$GITHUB_REPO"
+    "INSTALL_PATH=$INSTALL_PATH"
+    "SERVICE_NAME=$SERVICE_NAME"
+    "VERSION=$VERSION"
+    "GH_PROXY=$GH_PROXY"
+    "CONFIGURE_UFW=$CONFIGURE_UFW"
+    "INSTALL_DEPS=$INSTALL_DEPS"
+    "SELF_UPDATE=$SELF_UPDATE"
+    "INSTALL_SCRIPT_REF=$INSTALL_SCRIPT_REF"
+    "INSTALL_SCRIPT_URL=$INSTALL_SCRIPT_URL"
+  )
+  if [[ -n "$FRONTEND_PORT_WAS_SET" ]]; then
+    env_args+=("FRONTEND_PORT=$FRONTEND_PORT")
+  fi
+  exec env "${env_args[@]}" bash "$MANAGER_PATH" update
 }
 
 open_firewall_port() {
@@ -298,7 +387,7 @@ show_success() {
   version="$(head -n1 "$VERSION_FILE" 2>/dev/null || echo unknown)"
 
   echo
-  printf "${GREEN}安装完成${RESET}\n"
+  printf '%b安装完成%b\n' "$GREEN" "$RESET"
   echo "版本：$version"
   [[ -n "$local_ip" ]] && echo "局域网：http://${local_ip}:${FRONTEND_PORT}/"
   [[ -n "$public_ip" ]] && echo "公网：  http://${public_ip}:${FRONTEND_PORT}/"
@@ -330,27 +419,32 @@ update_app() {
   install_deps
   [[ -f "$INSTALL_PATH/server" ]] || die "not installed at $INSTALL_PATH"
 
+  if self_update_manager; then
+    log "re-running update with latest manager script"
+    exec_latest_manager_update
+  fi
+
   local backup
   backup="$(mktemp -d)"
-  cp "$INSTALL_PATH/server" "$backup/server"
-  [[ -d "$INSTALL_PATH/dist" ]] && cp -R "$INSTALL_PATH/dist" "$backup/dist"
+  backup_install_files "$backup"
 
   systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
-  if ! fetch_and_unpack; then
+  if ! (fetch_and_unpack && prepare_config && write_service && install_cli); then
     warn "update failed; restoring previous files"
-    cp "$backup/server" "$INSTALL_PATH/server"
-    rm -rf "$INSTALL_PATH/dist"
-    [[ -d "$backup/dist" ]] && cp -R "$backup/dist" "$INSTALL_PATH/dist"
+    restore_install_files "$backup"
     systemctl start "${SERVICE_NAME}.service" 2>/dev/null || true
     rm -rf "$backup"
     exit 1
   fi
 
-  prepare_config
-  write_service
-  install_cli
+  if ! systemctl restart "${SERVICE_NAME}.service"; then
+    warn "new version failed to start; restoring previous files"
+    restore_install_files "$backup"
+    systemctl restart "${SERVICE_NAME}.service" 2>/dev/null || true
+    rm -rf "$backup"
+    exit 1
+  fi
   record_version
-  systemctl restart "${SERVICE_NAME}.service"
   rm -rf "$backup"
   log "updated"
 }
