@@ -15,6 +15,7 @@ SELF_UPDATE="${SELF_UPDATE:-1}"
 INSTALL_SCRIPT_REF="${INSTALL_SCRIPT_REF:-main}"
 INSTALL_SCRIPT_URL="${INSTALL_SCRIPT_URL:-${GH_PROXY}https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALL_SCRIPT_REF}/install.sh}"
 VIDEO_SITE_SKIP_SELF_UPDATE="${VIDEO_SITE_SKIP_SELF_UPDATE:-0}"
+SERVICE_READY_TIMEOUT="${SERVICE_READY_TIMEOUT:-90}"
 VERSION_FILE="$INSTALL_PATH/.version"
 MANAGER_PATH="/usr/local/sbin/${APP_NAME}-manager"
 COMMAND_LINK="/usr/local/bin/91"
@@ -69,6 +70,7 @@ Options via environment:
   SELF_UPDATE=$SELF_UPDATE
   INSTALL_SCRIPT_REF=$INSTALL_SCRIPT_REF
   INSTALL_SCRIPT_URL=$INSTALL_SCRIPT_URL
+  SERVICE_READY_TIMEOUT=$SERVICE_READY_TIMEOUT
 
 Examples:
   sudo bash install.sh
@@ -307,6 +309,7 @@ exec_latest_manager_update() {
     "SELF_UPDATE=$SELF_UPDATE"
     "INSTALL_SCRIPT_REF=$INSTALL_SCRIPT_REF"
     "INSTALL_SCRIPT_URL=$INSTALL_SCRIPT_URL"
+    "SERVICE_READY_TIMEOUT=$SERVICE_READY_TIMEOUT"
   )
   if [[ -n "$FRONTEND_PORT_WAS_SET" ]]; then
     env_args+=("FRONTEND_PORT=$FRONTEND_PORT")
@@ -321,6 +324,55 @@ open_firewall_port() {
     log "allowing ${FRONTEND_PORT}/tcp in UFW"
     ufw allow "${FRONTEND_PORT}/tcp"
   fi
+}
+
+listen_port_from_config() {
+  local cfg="$INSTALL_PATH/config.yaml"
+  local listen="" port
+  if [[ -f "$cfg" ]]; then
+    listen="$(sed -nE 's/^[[:space:]]*listen:[[:space:]]*"?([^" #]+)"?.*/\1/p' "$cfg" | head -n1)"
+  fi
+  port="${listen##*:}"
+  if [[ "$port" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$port"
+    return
+  fi
+  printf '%s' "$FRONTEND_PORT"
+}
+
+service_health_url() {
+  printf 'http://127.0.0.1:%s/admin/api/setup' "$(listen_port_from_config)"
+}
+
+wait_for_service_ready() {
+  local url deadline
+  url="$(service_health_url)"
+  deadline=$((SECONDS + SERVICE_READY_TIMEOUT))
+  log "waiting for service at $url"
+  while (( SECONDS < deadline )); do
+    if curl -fsS --connect-timeout 2 --max-time 5 "$url" >/dev/null 2>&1; then
+      log "service is ready"
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+restart_service_ready() {
+  if systemctl restart "${SERVICE_NAME}.service" && wait_for_service_ready; then
+    return 0
+  fi
+
+  warn "service did not become ready; retrying restart"
+  if systemctl restart "${SERVICE_NAME}.service" && wait_for_service_ready; then
+    return 0
+  fi
+
+  warn "service failed to become ready"
+  systemctl --no-pager --full status "${SERVICE_NAME}.service" || true
+  journalctl -u "${SERVICE_NAME}.service" -n 80 --no-pager || true
+  return 1
 }
 
 fetch_and_unpack() {
@@ -408,8 +460,8 @@ install_app() {
   write_service
   install_cli
   open_firewall_port
+  restart_service_ready || die "service failed to start"
   record_version
-  systemctl restart "${SERVICE_NAME}.service"
   show_success
 }
 
@@ -437,10 +489,10 @@ update_app() {
     exit 1
   fi
 
-  if ! systemctl restart "${SERVICE_NAME}.service"; then
+  if ! restart_service_ready; then
     warn "new version failed to start; restoring previous files"
     restore_install_files "$backup"
-    systemctl restart "${SERVICE_NAME}.service" 2>/dev/null || true
+    restart_service_ready 2>/dev/null || true
     rm -rf "$backup"
     exit 1
   fi
@@ -524,7 +576,7 @@ main() {
       ;;
     restart)
       need_root "$@"
-      systemctl restart "${SERVICE_NAME}.service"
+      restart_service_ready || die "service failed to start"
       ;;
     stop)
       need_root "$@"
