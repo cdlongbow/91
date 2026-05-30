@@ -59,7 +59,7 @@ preview:
   width: 480
 
 # 盘列表。上线后请通过管理后台添加，本文件可留空。
-# kind 支持 quark / p115 / pikpak / wopan / onedrive。
+# kind 支持 quark / p115 / pikpak / wopan / onedrive / localstorage。
 # OneDrive 示例：
 # - id: "my-onedrive"
 #   kind: "onedrive"
@@ -67,4 +67,12 @@ preview:
 #   root_id: "root"
 #   params:
 #     refresh_token: "..."
+# 本地存储示例：
+# - id: "local-media"
+#   kind: "localstorage"
+#   name: "本地视频目录"
+#   root_id: "/"
+#   scan_root_id: "/"
+#   params:
+#     path: "/mnt/videos"
 drives: []

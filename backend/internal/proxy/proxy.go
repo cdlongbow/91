@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -171,6 +172,11 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, link *drives.Strea
 		http.Error(w, "bad upstream url", http.StatusBadGateway)
 		return
 	}
+	if localPath, ok := localFilePath(u, link.URL); ok {
+		w.Header().Set("Cache-Control", "private, max-age=300")
+		http.ServeFile(w, r, localPath)
+		return
+	}
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, u.String(), nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -211,6 +217,19 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, link *drives.Strea
 // ServeLocal 服务本地 teaser 文件
 func (p *Proxy) ServeLocal(w http.ResponseWriter, r *http.Request, path string) {
 	http.ServeFile(w, r, path)
+}
+
+func localFilePath(u *url.URL, raw string) (string, bool) {
+	if u == nil {
+		return "", false
+	}
+	if u.Scheme == "file" && u.Path != "" {
+		return u.Path, true
+	}
+	if u.Scheme == "" && u.Host == "" && filepath.IsAbs(raw) {
+		return raw, true
+	}
+	return "", false
 }
 
 var errDriveNotFound = &httpError{Code: http.StatusNotFound, Msg: "drive not found"}

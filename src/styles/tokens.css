@@ -134,6 +134,7 @@
   --drive-pikpak: #8a6dff;
   --drive-wopan: #ff8a3c;
   --drive-onedrive: #4cabea;
+  --drive-localstorage: #35b88f;
 
   /* ----- 阴影 ----- */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
@@ -213,6 +214,7 @@
   --drive-pikpak: #8466e6;
   --drive-wopan: #e57a36;
   --drive-onedrive: #2f95cf;
+  --drive-localstorage: #239978;
 
   /* ----- 阴影（粉色柔投影 + 一层中性） ----- */
   --shadow-sm: 0 1px 2px rgba(180, 90, 120, 0.08);

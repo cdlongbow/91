@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -168,6 +170,36 @@ func TestServeStreamRedirectsOneDrive(t *testing.T) {
 	}
 	if got := rr.Header().Get("Location"); got != "https://public.onedrive.example/video.mp4" {
 		t.Fatalf("Location = %q", got)
+	}
+	if drv.calls != 1 {
+		t.Fatalf("link calls = %d, want 1", drv.calls)
+	}
+}
+
+func TestServeStreamServesLocalFilePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "video.mp4")
+	if err := os.WriteFile(path, []byte("0123456789"), 0o644); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+	reg := NewRegistry()
+	drv := &proxyFakeSimpleDrive{
+		kind: "localstorage",
+		url:  path,
+	}
+	reg.Set("local", drv)
+
+	p := New(reg)
+	req := httptest.NewRequest(http.MethodGet, "/p/stream/local/file-1", nil)
+	req.Header.Set("Range", "bytes=2-5")
+	rr := httptest.NewRecorder()
+
+	p.ServeStream(rr, req, "local", "file-1")
+
+	if rr.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusPartialContent)
+	}
+	if got := rr.Body.String(); got != "2345" {
+		t.Fatalf("body = %q, want range bytes", got)
 	}
 	if drv.calls != 1 {
 		t.Fatalf("link calls = %d, want 1", drv.calls)

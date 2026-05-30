@@ -25,6 +25,7 @@ import (
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/config"
 	"github.com/video-site/backend/internal/drives"
+	"github.com/video-site/backend/internal/drives/localstorage"
 	"github.com/video-site/backend/internal/drives/localupload"
 	"github.com/video-site/backend/internal/drives/onedrive"
 	"github.com/video-site/backend/internal/drives/p115"
@@ -631,6 +632,11 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 				d.Credentials["refresh_token"] = refresh
 				_ = a.cat.UpsertDrive(ctx, d)
 			},
+		})
+	case localstorage.Kind:
+		drv = localstorage.New(localstorage.Config{
+			ID:       d.ID,
+			RootPath: d.Credentials["path"],
 		})
 	case spider91.Kind:
 		drv = spider91.New(spider91.Config{

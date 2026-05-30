@@ -21,6 +21,7 @@ import (
 
 	"github.com/video-site/backend/internal/auth"
 	"github.com/video-site/backend/internal/catalog"
+	"github.com/video-site/backend/internal/drives/localstorage"
 	"github.com/video-site/backend/internal/drives/localupload"
 	"github.com/video-site/backend/internal/drives/spider91"
 	"github.com/video-site/backend/internal/proxy"
@@ -899,6 +900,8 @@ func driveKindLabel(kind string) string {
 		return "联通沃盘"
 	case "onedrive":
 		return "OneDrive"
+	case localstorage.Kind:
+		return "本地存储"
 	case spider91.Kind:
 		return "91 爬虫"
 	default:

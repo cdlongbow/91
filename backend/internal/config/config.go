@@ -202,7 +202,7 @@ type Nightly struct {
 // 这里保留 yaml 中的静态定义，用于启动时预置盘。生产建议只在 DB 里维护。
 type Drive struct {
 	ID     string            `yaml:"id"`
-	Kind   string            `yaml:"kind"` // quark / p115 / pikpak / wopan / onedrive
+	Kind   string            `yaml:"kind"` // quark / p115 / pikpak / wopan / onedrive / localstorage
 	Name   string            `yaml:"name"`
 	RootID string            `yaml:"root_id"`
 	Params map[string]string `yaml:"params,omitempty"`

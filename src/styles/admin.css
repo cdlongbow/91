@@ -1825,6 +1825,7 @@
 .admin-drive-card__brand-icon[data-kind="pikpak"] { background: var(--drive-pikpak); }
 .admin-drive-card__brand-icon[data-kind="wopan"] { background: var(--drive-wopan); }
 .admin-drive-card__brand-icon[data-kind="onedrive"] { background: var(--drive-onedrive); }
+.admin-drive-card__brand-icon[data-kind="localstorage"] { background: var(--drive-localstorage); }
 .admin-drive-card__brand-icon[data-kind="spider91"] { background: var(--accent); }
 
 .admin-drive-card__info {

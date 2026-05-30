@@ -2,7 +2,7 @@
 
 视频聚合站的 Go 后端。提供三件事：
 
-1. 多家网盘统一抽象（夸克 / 115 / PikPak / 联通沃盘 / OneDrive）
+1. 多家网盘统一抽象（夸克 / 115 / PikPak / 联通沃盘 / OneDrive / 本地存储）
 2. 视频元数据目录（SQLite）+ 扫描 + teaser 预生成
 3. REST API（前台）+ 管理后台 + 直链代理
 4. 标签池、视频隐藏、按网盘统计和详情页来源网盘类型展示能力
@@ -21,6 +21,7 @@ internal/
     pikpak/                 PikPak（自己实现，参考 OpenList pikpak）
     wopan/                  联通沃盘（壳子 + OpenListTeam/wopan-sdk-go）
     onedrive/               OneDrive（OpenList 在线续期 + Microsoft Graph 文件接口）
+    localstorage/           本地目录扫描（服务器已有视频目录）
   scanner/                  扫目录 → 落库
   preview/                  ffmpeg 抽封面和生成多段 teaser
   proxy/                    /p/stream/*、/p/preview/* 代理
@@ -105,9 +106,10 @@ go run ./cmd/server 后端 9192
 |--------|---------------------------------------------------------------|
 | quark  | `cookie`                                                      |
 | p115   | `cookie`（形如 `UID=...; CID=...; SEID=...; KID=...`）         |
-| pikpak | `username`、`password`，可选 `refresh_token`、`captcha_token`、`device_id`、`platform`、`disable_media_link` |
+| pikpak | `username`、`password`（token、验证码和设备 ID 由服务端自动处理并保存） |
 | wopan  | `access_token`、`refresh_token`，可选 `family_id`              |
 | onedrive | `refresh_token` |
+| localstorage | `path`（服务器上的已有视频目录，如 `/mnt/videos`） |
 
 ### PikPak 速度说明
 

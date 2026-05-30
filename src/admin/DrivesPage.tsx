@@ -26,6 +26,7 @@ const kindLabel: Record<string, string> = {
   pikpak: "PikPak",
   wopan: "联通沃盘",
   onedrive: "OneDrive",
+  localstorage: "本地存储",
   spider91: "91 爬虫",
 };
 
@@ -602,7 +603,7 @@ export function DrivesPage() {
         <div className="admin-empty">加载中...</div>
       ) : list.length === 0 ? (
         <div className="admin-card admin-empty">
-          还没有配置任何网盘。点击右上角「新建」，选择夸克 / 115 / PikPak / 沃盘 / OneDrive，填入凭证即可。
+          还没有配置任何网盘。点击右上角「新建」，选择夸克 / 115 / PikPak / 沃盘 / OneDrive / 本地存储，填入凭证或路径即可。
         </div>
       ) : (
         <div className="admin-drives-grid">
@@ -862,7 +863,11 @@ function DriveForm({
 }) {
   const fields = useMemo(() => credentialFields(form.kind), [form.kind]);
   const help = credentialHelp(form.kind, isEdit);
-  const showDirectoryFields = form.kind !== "spider91" && form.kind !== "onedrive";
+  const showDirectoryFields =
+    form.kind !== "spider91" &&
+    form.kind !== "onedrive" &&
+    form.kind !== "localstorage" &&
+    form.kind !== "pikpak";
 
   function set<K extends keyof FormState>(k: K, v: FormState[K]) {
     onChange({ ...form, [k]: v });
@@ -899,10 +904,11 @@ function DriveForm({
         >
           <option value="p115">115 网盘</option>
           <option value="pikpak">PikPak</option>
-          <option value="spider91">91 爬虫</option>
+          <option value="onedrive">OneDrive</option>
+          <option value="localstorage">本地存储</option>
+          <option value="spider91">91 Spider</option>
           <option value="quark">夸克网盘</option>
           <option value="wopan">联通沃盘</option>
-          <option value="onedrive">OneDrive</option>
         </select>
       </div>
       {showDirectoryFields && (
@@ -1020,11 +1026,13 @@ function credentialHelp(kind: Kind, isEdit: boolean): string {
     case "p115":
       return `登录 115.com 后复制 Cookie，形如 "UID=...; CID=...; SEID=...; KID=..."。${note}`;
     case "pikpak":
-      return `参考 OpenList 的 PikPak 登录方式。可填用户名和密码首次登录，也可填 refresh_token；如返回验证码链接，打开验证后把 captcha_token 粘贴回来。${note}`;
+      return `填写 PikPak 账号和密码即可。平台、设备 ID、验证码 token 和 refresh token 会由服务端自动处理并保存。${note}`;
     case "wopan":
       return `需要 access_token 和 refresh_token。后续会加扫码/短信登录入口，第一版只能手工粘贴。${note}`;
     case "onedrive":
       return `按 OpenList 默认应用在线挂载，只需要 refresh_token；保存时会自动刷新并保存 token。${note}`;
+    case "localstorage":
+      return `把服务器上的一个已有目录作为视频来源扫描。填写绝对路径，例如 /mnt/videos；系统会读取该目录及子目录中的视频，并生成封面、Teaser 和指纹。${note}`;
     case "spider91":
       return "91 爬虫会把定时抓取到的视频和封面先保存到本机，并作为一个视频来源接入站点；它不是外部网盘，不需要填写 Cookie 或目录 ID。后续流水线会把较早的视频上传到你选择的 115 / PikPak / OneDrive 目标盘。";
     default:
@@ -1065,42 +1073,15 @@ function credentialFields(kind: Kind): Array<{
       return [
         {
           key: "username",
-          label: "用户名 / 邮箱（无 refresh_token 时必填）",
+          label: "用户名 / 邮箱",
           placeholder: "user@example.com",
+          required: true,
         },
         {
           key: "password",
-          label: "密码（无 refresh_token 时必填）",
+          label: "密码",
           placeholder: "PikPak 密码",
-        },
-        {
-          key: "platform",
-          label: "platform",
-          placeholder: "web（可选：android / web / pc）",
-          help: "默认 web；如果登录或直链异常，可尝试 android 或 pc。",
-        },
-        {
-          key: "refresh_token",
-          label: "refresh_token（可选）",
-          placeholder: "已有 token 时可直接粘贴",
-          multiline: true,
-        },
-        {
-          key: "captcha_token",
-          label: "captcha_token（可选）",
-          placeholder: "遇到验证码校验时粘贴",
-          multiline: true,
-        },
-        {
-          key: "device_id",
-          label: "device_id（可选）",
-          placeholder: "留空自动生成并保存",
-        },
-        {
-          key: "disable_media_link",
-          label: "disable_media_link",
-          placeholder: "true",
-          help: "默认 true，使用原始下载链接；填 false 可尝试使用媒体缓存链接。",
+          required: true,
         },
       ];
     case "wopan":
@@ -1133,6 +1114,16 @@ function credentialFields(kind: Kind): Array<{
           required: true,
         },
       ];
+    case "localstorage":
+      return [
+        {
+          key: "path",
+          label: "本地目录路径",
+          placeholder: "/mnt/videos",
+          required: true,
+          help: "路径必须是后端服务器上的已有目录；保存后可手动重扫，系统会递归扫描支持的视频格式。",
+        },
+      ];
     case "spider91":
       return [];
   }
@@ -1141,6 +1132,7 @@ function credentialFields(kind: Kind): Array<{
 function defaultRootId(kind: Kind): string {
   if (kind === "pikpak") return "";
   if (kind === "onedrive") return "root";
+  if (kind === "localstorage") return "/";
   if (kind === "spider91") return "/";
   return "0";
 }

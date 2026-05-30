@@ -351,6 +351,12 @@
   color: var(--drive-onedrive);
 }
 
+.vd-meta__chip[data-tone="localstorage"] {
+  background: rgba(53, 184, 143, 0.14);
+  border-color: rgba(53, 184, 143, 0.3);
+  color: var(--drive-localstorage);
+}
+
 /* ---------- Actions toolbar ---------- */
 .vd-actions {
   display: flex;

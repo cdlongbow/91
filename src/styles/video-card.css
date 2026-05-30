@@ -306,6 +306,14 @@
   --drive-shadow: rgba(76, 171, 234, 0.15);
   --drive-shadow-strong: rgba(76, 171, 234, 0.4);
 }
+.source-badge[data-kind="localstorage"] {
+  --drive-color: var(--drive-localstorage);
+  --drive-bg: rgba(53, 184, 143, 0.12);
+  --drive-text: #a8efdc;
+  --drive-border: rgba(53, 184, 143, 0.35);
+  --drive-shadow: rgba(53, 184, 143, 0.15);
+  --drive-shadow-strong: rgba(53, 184, 143, 0.4);
+}
 
 /* ----- Preview overlay ----- */
 .preview-loader {
@@ -441,6 +449,7 @@
 .video-card__source[data-kind="pikpak"] { --source-color: var(--drive-pikpak); }
 .video-card__source[data-kind="wopan"] { --source-color: var(--drive-wopan); }
 .video-card__source[data-kind="onedrive"] { --source-color: var(--drive-onedrive); }
+.video-card__source[data-kind="localstorage"] { --source-color: var(--drive-localstorage); }
 
 /* =========================================================
  * Empty / Loading / Skeleton
