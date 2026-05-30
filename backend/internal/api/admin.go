@@ -78,8 +78,9 @@ type GenerationStatus struct {
 }
 
 type DriveGenerationStatuses struct {
-	Thumbnail GenerationStatus `json:"thumbnail"`
-	Preview   GenerationStatus `json:"preview"`
+	Thumbnail   GenerationStatus `json:"thumbnail"`
+	Preview     GenerationStatus `json:"preview"`
+	Fingerprint GenerationStatus `json:"fingerprint"`
 }
 
 func (a *AdminServer) Register(r chi.Router) {
@@ -346,6 +347,11 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	fingerprintCounts, err := a.Catalog.CountFingerprintsByDrive(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	generationStatuses := map[string]DriveGenerationStatuses{}
 	if a.GetDriveGenerationStatuses != nil {
 		generationStatuses = a.GetDriveGenerationStatuses()
@@ -368,26 +374,34 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 		SkipDirIDs []string `json:"skipDirIds"`
 		// LastCrawlAt 是 spider91 上次成功爬取的 unix 秒（来自 credentials.last_crawl_at）。
 		// 其它 kind 留 0；前端用它显示"上次抓取: N 小时前"。
-		LastCrawlAt               int64            `json:"lastCrawlAt,omitempty"`
-		ThumbnailGenerationStatus GenerationStatus `json:"thumbnailGenerationStatus"`
-		PreviewGenerationStatus   GenerationStatus `json:"previewGenerationStatus"`
-		ThumbnailReadyCount       int              `json:"thumbnailReadyCount"`
-		ThumbnailPendingCount     int              `json:"thumbnailPendingCount"`
-		ThumbnailFailedCount      int              `json:"thumbnailFailedCount"`
-		TeaserReadyCount          int              `json:"teaserReadyCount"`
-		TeaserPendingCount        int              `json:"teaserPendingCount"`
-		TeaserFailedCount         int              `json:"teaserFailedCount"`
+		LastCrawlAt                 int64            `json:"lastCrawlAt,omitempty"`
+		ThumbnailGenerationStatus   GenerationStatus `json:"thumbnailGenerationStatus"`
+		PreviewGenerationStatus     GenerationStatus `json:"previewGenerationStatus"`
+		FingerprintGenerationStatus GenerationStatus `json:"fingerprintGenerationStatus"`
+		ThumbnailReadyCount         int              `json:"thumbnailReadyCount"`
+		ThumbnailPendingCount       int              `json:"thumbnailPendingCount"`
+		ThumbnailFailedCount        int              `json:"thumbnailFailedCount"`
+		TeaserReadyCount            int              `json:"teaserReadyCount"`
+		TeaserPendingCount          int              `json:"teaserPendingCount"`
+		TeaserFailedCount           int              `json:"teaserFailedCount"`
+		FingerprintReadyCount       int              `json:"fingerprintReadyCount"`
+		FingerprintPendingCount     int              `json:"fingerprintPendingCount"`
+		FingerprintFailedCount      int              `json:"fingerprintFailedCount"`
 	}
 	list := make([]out, 0, len(drives))
 	for _, d := range drives {
 		counts := teaserCounts[d.ID]
 		thumbCounts := thumbnailCounts[d.ID]
+		fingerprintCount := fingerprintCounts[d.ID]
 		generation := generationStatuses[d.ID]
 		if generation.Thumbnail.State == "" {
 			generation.Thumbnail.State = "idle"
 		}
 		if generation.Preview.State == "" {
 			generation.Preview.State = "idle"
+		}
+		if generation.Fingerprint.State == "" {
+			generation.Fingerprint.State = "idle"
 		}
 		// spider91 没有用户凭证概念；只要存在 drive 行就视为"已配置"。
 		// last_crawl_at 是后端自动写入的运行状态字段，不计入 hasCredential 判定。
@@ -414,18 +428,22 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 			ID: d.ID, Kind: d.Kind, Name: d.Name,
 			RootID: d.RootID, ScanRootID: d.ScanRootID,
 			Status: d.Status, LastError: d.LastError,
-			HasCredential:             hasCred,
-			TeaserEnabled:             d.TeaserEnabled,
-			SkipDirIDs:                append([]string{}, d.SkipDirIDs...),
-			LastCrawlAt:               lastCrawlAt,
-			ThumbnailGenerationStatus: generation.Thumbnail,
-			PreviewGenerationStatus:   generation.Preview,
-			ThumbnailReadyCount:       thumbCounts.Ready,
-			ThumbnailPendingCount:     thumbCounts.Pending,
-			ThumbnailFailedCount:      thumbCounts.Failed,
-			TeaserReadyCount:          counts.Ready,
-			TeaserPendingCount:        counts.Pending,
-			TeaserFailedCount:         counts.Failed,
+			HasCredential:               hasCred,
+			TeaserEnabled:               d.TeaserEnabled,
+			SkipDirIDs:                  append([]string{}, d.SkipDirIDs...),
+			LastCrawlAt:                 lastCrawlAt,
+			ThumbnailGenerationStatus:   generation.Thumbnail,
+			PreviewGenerationStatus:     generation.Preview,
+			FingerprintGenerationStatus: generation.Fingerprint,
+			ThumbnailReadyCount:         thumbCounts.Ready,
+			ThumbnailPendingCount:       thumbCounts.Pending,
+			ThumbnailFailedCount:        thumbCounts.Failed,
+			TeaserReadyCount:            counts.Ready,
+			TeaserPendingCount:          counts.Pending,
+			TeaserFailedCount:           counts.Failed,
+			FingerprintReadyCount:       fingerprintCount.Ready,
+			FingerprintPendingCount:     fingerprintCount.Pending,
+			FingerprintFailedCount:      fingerprintCount.Failed,
 		})
 	}
 	writeJSON(w, http.StatusOK, list)

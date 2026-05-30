@@ -924,6 +924,12 @@ type DriveThumbnailCounts struct {
 	Failed  int
 }
 
+type DriveFingerprintCounts struct {
+	Ready   int
+	Pending int
+	Failed  int
+}
+
 func (c *Catalog) CountTeasersByDrive(ctx context.Context) (map[string]DriveTeaserCounts, error) {
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT drive_id,
@@ -984,6 +990,52 @@ func (c *Catalog) CountThumbnailsByDrive(ctx context.Context) (map[string]DriveT
 		return nil, err
 	}
 	return out, nil
+}
+
+func (c *Catalog) CountFingerprintsByDrive(ctx context.Context) (map[string]DriveFingerprintCounts, error) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT drive_id,
+		        COUNT(CASE WHEN COALESCE(sampled_sha256, '') != ''
+		                      OR COALESCE(fingerprint_status, 'pending') = 'ready' THEN 1 END) AS ready_count,
+		        COUNT(CASE WHEN size_bytes > 0
+		                     AND COALESCE(sampled_sha256, '') = ''
+		                     AND COALESCE(fingerprint_status, 'pending') = 'pending' THEN 1 END) AS pending_count,
+		        COUNT(CASE WHEN COALESCE(sampled_sha256, '') = ''
+		                     AND COALESCE(fingerprint_status, 'pending') = 'failed' THEN 1 END) AS failed_count
+		   FROM videos
+		  WHERE COALESCE(hidden, 0) = 0
+		  GROUP BY drive_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]DriveFingerprintCounts)
+	for rows.Next() {
+		var driveID string
+		var counts DriveFingerprintCounts
+		if err := rows.Scan(&driveID, &counts.Ready, &counts.Pending, &counts.Failed); err != nil {
+			return nil, err
+		}
+		out[driveID] = counts
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Catalog) CountVideosNeedingFingerprint(ctx context.Context, driveID string) (int, error) {
+	var count int
+	err := c.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM videos
+		 WHERE drive_id = ?
+		   AND size_bytes > 0
+		   AND COALESCE(sampled_sha256, '') = ''
+		   AND COALESCE(fingerprint_status, 'pending') = 'pending'
+		   AND COALESCE(hidden, 0) = 0`,
+		driveID).Scan(&count)
+	return count, err
 }
 
 type LocalMediaRef struct {

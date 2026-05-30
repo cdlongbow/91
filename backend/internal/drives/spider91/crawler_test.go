@@ -234,13 +234,13 @@ func TestCrawlerRunOnceMissingScript(t *testing.T) {
 }
 
 // TestCrawlerThumbDownloadFailureMarksStatusFailed 验证：网站封面下载失败时
-// crawler 把 thumbnail_status 显式标 'failed'，避免 enqueueDriveGeneration 的
-// waitForThumbnailsBeforePreview 因为 count > 0 把 teaser 卡死等待。
+// crawler 把 thumbnail_status 显式标 'failed'，避免后续封面补队列一直重复
+// 捞到这条 spider91 视频。
 //
 // 历史 bug：之前 thumb 下载失败仅打 log，url=”, status 走 schema DEFAULT 'pending'。
 // CountVideosNeedingThumbnail 条件是 url=” AND status != 'failed' → count=1。
-// spider91 drive 的 thumb worker 按设计不处理 spider91 视频 → 没人会改 status。
-// 结果 teaser 永远卡在 [preview] waiting for 1 thumbnails before teaser generation。
+// spider91 drive 的 thumb worker 按设计不处理 spider91 视频 → 没人会改 status，
+// 后续补队列会一直认为它还缺封面。
 func TestCrawlerThumbDownloadFailureMarksStatusFailed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-based fake script only on unix")
@@ -317,8 +317,7 @@ func TestCrawlerThumbDownloadFailureMarksStatusFailed(t *testing.T) {
 
 	// 关键断言：CountVideosNeedingThumbnail 应该返回 0。
 	// 该函数的 SQL 条件是 `url = '' AND status != 'failed'`；如果 crawler 没把
-	// status 标 'failed'（schema DEFAULT 'pending'），count 就会是 1，外层
-	// waitForThumbnailsBeforePreview 会因为 count > 0 把 teaser 卡死等待。
+	// status 标 'failed'（schema DEFAULT 'pending'），count 就会是 1。
 	count, err := cat.CountVideosNeedingThumbnail(context.Background(), driveID)
 	if err != nil {
 		t.Fatalf("count: %v", err)

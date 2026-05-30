@@ -427,13 +427,13 @@ export function DrivesPage() {
             )}
           </div>
 
-          {/* 右栏：Teaser / 封面 与 缓存占用 */}
+          {/* 右栏：Teaser / 封面 / 指纹 与 缓存占用 */}
           <div>
             <div className="admin-detail-card">
               <header className="admin-detail-card__title">
                 <div className="admin-detail-card__title-left">
                   <PlayCircle size={16} />
-                  <span>Teaser 预览与封面</span>
+                  <span>生成状态</span>
                 </div>
                 <div className="admin-detail-actions-inline">
                   <button
@@ -478,6 +478,22 @@ export function DrivesPage() {
                       ready={d.teaserReadyCount}
                       pending={d.teaserPendingCount}
                       failed={d.teaserFailedCount}
+                    />
+                  </div>
+                </div>
+                <div className="admin-detail-row">
+                  <span className="admin-detail-label">指纹状态</span>
+                  <div className="admin-detail-value">
+                    <GenerationStatusLine label="指纹" status={d.fingerprintGenerationStatus} />
+                  </div>
+                </div>
+                <div className="admin-detail-row">
+                  <span className="admin-detail-label">指纹数量</span>
+                  <div className="admin-detail-value">
+                    <GenerationCounts
+                      ready={d.fingerprintReadyCount}
+                      pending={d.fingerprintPendingCount}
+                      failed={d.fingerprintFailedCount}
                     />
                   </div>
                 </div>
@@ -622,6 +638,15 @@ export function DrivesPage() {
                     {d.teaserReadyCount ?? 0}
                     <span style={{ fontSize: "11px", fontWeight: "normal", color: "var(--text-faint)" }}>
                       {" "}/ {d.teaserFailedCount ?? 0}
+                    </span>
+                  </strong>
+                </div>
+                <div className="admin-drive-card__metric">
+                  <span>指纹数 (就绪/失败)</span>
+                  <strong>
+                    {d.fingerprintReadyCount ?? 0}
+                    <span style={{ fontSize: "11px", fontWeight: "normal", color: "var(--text-faint)" }}>
+                      {" "}/ {d.fingerprintFailedCount ?? 0}
                     </span>
                   </strong>
                 </div>

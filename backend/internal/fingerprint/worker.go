@@ -24,12 +24,14 @@ const (
 	defaultSampleSizeBytes int64 = 512 * 1024
 	defaultFullHashMaxSize int64 = 8 * 1024 * 1024
 	defaultCooldown              = 5 * time.Minute
+	defaultWorkerQueueSize       = 10000
 )
 
 type Config struct {
-	SampleSizeBytes int64
-	FullHashMaxSize int64
-	HTTPClient      *http.Client
+	SampleSizeBytes   int64
+	FullHashMaxSize   int64
+	RateLimitCooldown time.Duration
+	HTTPClient        *http.Client
 }
 
 type Worker struct {
@@ -37,9 +39,18 @@ type Worker struct {
 	Drive   drives.Drive
 	Config  Config
 
-	ch    chan *catalog.Video
-	queue videoQueue
-	http  *http.Client
+	ch       chan *catalog.Video
+	queue    videoQueue
+	activity taskActivity
+	cooldown cooldownState
+	http     *http.Client
+}
+
+type TaskStatus struct {
+	State         string
+	CurrentTitle  string
+	QueueLength   int
+	CooldownUntil time.Time
 }
 
 func NewWorker(cat *catalog.Catalog, drv drives.Drive, cfg Config) *Worker {
@@ -53,11 +64,14 @@ func NewWorker(cat *catalog.Catalog, drv drives.Drive, cfg Config) *Worker {
 	if cfg.FullHashMaxSize <= 0 {
 		cfg.FullHashMaxSize = defaultFullHashMaxSize
 	}
+	if cfg.RateLimitCooldown <= 0 {
+		cfg.RateLimitCooldown = defaultCooldown
+	}
 	return &Worker{
 		Catalog: cat,
 		Drive:   drv,
 		Config:  cfg,
-		ch:      make(chan *catalog.Video, 4096),
+		ch:      make(chan *catalog.Video, defaultWorkerQueueSize),
 		http:    hc,
 	}
 }
@@ -110,6 +124,31 @@ func (w *Worker) Run(ctx context.Context) {
 	}
 }
 
+func (w *Worker) Status() TaskStatus {
+	if w == nil {
+		return TaskStatus{State: "idle"}
+	}
+	currentID, currentTitle := w.activity.current()
+	status := TaskStatus{
+		State:        "idle",
+		CurrentTitle: currentTitle,
+		QueueLength:  w.queue.lengthExcluding(currentID),
+	}
+	if until, ok := w.cooldown.active(time.Now()); ok {
+		status.State = "cooling"
+		status.CooldownUntil = until
+		return status
+	}
+	if currentID != "" {
+		status.State = "generating"
+		return status
+	}
+	if status.QueueLength > 0 {
+		status.State = "queued"
+	}
+	return status
+}
+
 func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 	defer w.queue.release(v.ID)
 	if w.Catalog == nil || w.Drive == nil || v == nil || v.ID == "" {
@@ -122,16 +161,21 @@ func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 	if current.SampledSHA256 != "" || current.FingerprintStatus == "ready" || current.Hidden {
 		return
 	}
+	w.activity.start(current)
+	defer w.activity.done()
 	sum, err := Compute(ctx, w.Drive, current, w.Config, w.http)
 	if err != nil {
 		var rl *drives.RateLimitError
 		if errors.As(err, &rl) {
 			wait := rl.RetryAfter
 			if wait <= 0 {
-				wait = defaultCooldown
+				wait = w.Config.RateLimitCooldown
 			}
+			until := time.Now().Add(wait)
+			w.cooldown.set(until)
 			log.Printf("[fingerprint] drive=%s rate limited; keep video=%s pending and cool down for %s: %v", w.Drive.ID(), current.ID, wait, err)
 			sleepContext(ctx, wait)
+			w.cooldown.clear(until)
 			return
 		}
 		log.Printf("[fingerprint] video=%s failed: %v", current.ID, err)
@@ -319,6 +363,65 @@ func sleepContext(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+type taskActivity struct {
+	mu           sync.Mutex
+	currentID    string
+	currentTitle string
+}
+
+func (a *taskActivity) start(v *catalog.Video) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if v == nil {
+		a.currentID = ""
+		a.currentTitle = ""
+		return
+	}
+	a.currentID = v.ID
+	a.currentTitle = v.Title
+}
+
+func (a *taskActivity) done() {
+	a.mu.Lock()
+	a.currentID = ""
+	a.currentTitle = ""
+	a.mu.Unlock()
+}
+
+func (a *taskActivity) current() (string, string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.currentID, a.currentTitle
+}
+
+type cooldownState struct {
+	mu    sync.Mutex
+	until time.Time
+}
+
+func (s *cooldownState) set(until time.Time) {
+	s.mu.Lock()
+	s.until = until
+	s.mu.Unlock()
+}
+
+func (s *cooldownState) clear(until time.Time) {
+	s.mu.Lock()
+	if s.until.Equal(until) {
+		s.until = time.Time{}
+	}
+	s.mu.Unlock()
+}
+
+func (s *cooldownState) active(now time.Time) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.until.IsZero() || !s.until.After(now) {
+		return time.Time{}, false
+	}
+	return s.until, true
+}
+
 type videoQueue struct {
 	mu  sync.Mutex
 	ids map[string]struct{}
@@ -347,4 +450,19 @@ func (q *videoQueue) release(id string) {
 	q.mu.Lock()
 	delete(q.ids, id)
 	q.mu.Unlock()
+}
+
+func (q *videoQueue) lengthExcluding(currentID string) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	n := len(q.ids)
+	if currentID != "" {
+		if _, ok := q.ids[currentID]; ok {
+			n--
+		}
+	}
+	if n < 0 {
+		return 0
+	}
+	return n
 }

@@ -96,12 +96,16 @@ export type AdminDrive = {
   lastCrawlAt?: number;
   thumbnailGenerationStatus?: DriveGenerationStatus;
   previewGenerationStatus?: DriveGenerationStatus;
+  fingerprintGenerationStatus?: DriveGenerationStatus;
   thumbnailReadyCount: number;
   thumbnailPendingCount: number;
   thumbnailFailedCount: number;
   teaserReadyCount: number;
   teaserPendingCount: number;
   teaserFailedCount: number;
+  fingerprintReadyCount: number;
+  fingerprintPendingCount: number;
+  fingerprintFailedCount: number;
 };
 
 export type DriveGenerationStatus = {

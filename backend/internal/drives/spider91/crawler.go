@@ -463,8 +463,7 @@ func (c *Crawler) processOne(ctx context.Context, videoID string, item spiderVid
 		// 网站封面下载失败的视频：spider91 drive 的 thumb worker 按设计不
 		// 处理 spider91 视频（封面应是网站原图直接保存），所以没人接手。
 		// 显式标 'failed' 让 CountVideosNeedingThumbnail 排除（条件 status
-		// != 'failed'），否则 enqueueDriveGeneration → waitForThumbnailsBeforePreview
-		// 会因为 count > 0 把 teaser 入队永远卡在等待循环里。
+		// != 'failed'），避免后续封面补队列一直重复捞到这条视频。
 		_ = c.cfg.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{
 			ThumbnailStatus: "failed",
 		})

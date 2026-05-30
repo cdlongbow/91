@@ -975,7 +975,6 @@ type Worker struct {
 	queue   videoQueue
 
 	RateLimitCooldown time.Duration
-	BeforeTask        func(context.Context) bool
 	rateLimit         rateLimitState
 	activity          taskActivity
 }
@@ -985,7 +984,7 @@ func NewWorker(gen TeaserGenerator, cat *catalog.Catalog, drv drives.Drive) *Wor
 		Gen:     gen,
 		Catalog: cat,
 		Drive:   drv,
-		ch:      make(chan *catalog.Video, 4096),
+		ch:      make(chan *catalog.Video, defaultWorkerQueueSize),
 	}
 }
 
@@ -1036,6 +1035,7 @@ type ThumbWorker struct {
 const (
 	defaultTransientMediaCooldown            = 5 * time.Minute
 	defaultGenerationRateLimitCooldown       = 5 * time.Minute
+	defaultWorkerQueueSize                   = 10000
 	maxPreviewTeaserSizeBytes          int64 = 5 * 1024 * 1024 * 1024
 	previewStatusSkipped                     = "skipped"
 )
@@ -1175,7 +1175,7 @@ func NewThumbWorker(gen ThumbnailGenerator, cat *catalog.Catalog, drv drives.Dri
 		Gen:     gen,
 		Catalog: cat,
 		Drive:   drv,
-		ch:      make(chan *catalog.Video, 4096),
+		ch:      make(chan *catalog.Video, defaultWorkerQueueSize),
 	}
 }
 
@@ -1330,10 +1330,6 @@ func (w *ThumbWorker) Run(ctx context.Context) {
 
 func (w *Worker) processQueued(ctx context.Context, v *catalog.Video) {
 	defer w.queue.release(v)
-	if w.BeforeTask != nil && !w.BeforeTask(ctx) {
-		return
-	}
-
 	w.activity.start(v)
 	defer w.activity.done()
 	if !waitForRateLimitCooldown(ctx, &w.rateLimit, "preview", w.Drive) {

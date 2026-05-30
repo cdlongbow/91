@@ -15,6 +15,7 @@ import (
 	"github.com/video-site/backend/internal/drives"
 	"github.com/video-site/backend/internal/fingerprint"
 	"github.com/video-site/backend/internal/preview"
+	"github.com/video-site/backend/internal/proxy"
 )
 
 func TestRegisterPreviewWorkerBackfillsPendingWhenDriveTeaserEnabled(t *testing.T) {
@@ -78,7 +79,7 @@ func TestRegisterPreviewWorkerBackfillsPendingWhenDriveTeaserEnabled(t *testing.
 	t.Fatalf("preview status = %q, want ready", got.PreviewStatus)
 }
 
-func TestRegisterPreviewWorkersGenerateThumbnailsBeforePreviews(t *testing.T) {
+func TestRegisterPreviewWorkersRunThumbnailsAndPreviewsIndependently(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -94,16 +95,18 @@ func TestRegisterPreviewWorkersGenerateThumbnailsBeforePreviews(t *testing.T) {
 
 	seedDriveWithTeaser(t, cat, "drive-id", true)
 	now := time.Now()
-	for _, v := range []*catalog.Video{
-		{ID: "video-1", DriveID: "drive-id", FileID: "file-1", Title: "Clip 1", PreviewStatus: "pending"},
-		{ID: "video-2", DriveID: "drive-id", FileID: "file-2", Title: "Clip 2", PreviewStatus: "pending"},
-	} {
-		v.PublishedAt = now
-		v.CreatedAt = now
-		v.UpdatedAt = now
-		if err := cat.UpsertVideo(ctx, v); err != nil {
-			t.Fatalf("seed video %s: %v", v.ID, err)
-		}
+	video := &catalog.Video{
+		ID:            "video-1",
+		DriveID:       "drive-id",
+		FileID:        "file-1",
+		Title:         "Clip 1",
+		PreviewStatus: "pending",
+		PublishedAt:   now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := cat.UpsertVideo(ctx, video); err != nil {
+		t.Fatalf("seed video: %v", err)
 	}
 
 	app := &App{
@@ -111,7 +114,10 @@ func TestRegisterPreviewWorkersGenerateThumbnailsBeforePreviews(t *testing.T) {
 		workers:      make(map[string]*preview.Worker),
 		thumbWorkers: make(map[string]*preview.ThumbWorker),
 	}
-	gen := &serverFakeTeaserGenerator{}
+	gen := &serverBlockingThumbGenerator{
+		started: make(chan string, 1),
+		release: make(chan struct{}),
+	}
 	drv := &serverFakeDrive{}
 	worker := preview.NewWorker(gen, cat, drv)
 	thumbWorker := preview.NewThumbWorker(gen, cat, drv)
@@ -120,38 +126,36 @@ func TestRegisterPreviewWorkersGenerateThumbnailsBeforePreviews(t *testing.T) {
 
 	app.registerPreviewWorkers(ctx, "drive-id", worker, thumbWorker, nil, func() {})
 
+	select {
+	case got := <-gen.started:
+		if got != video.ID {
+			t.Fatalf("thumbnail started for %q, want %q", got, video.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("thumbnail generation did not start")
+	}
+
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		first, err := cat.GetVideo(ctx, "video-1")
+		got, err := cat.GetVideo(ctx, video.ID)
 		if err != nil {
-			t.Fatalf("get video-1: %v", err)
+			t.Fatalf("get video: %v", err)
 		}
-		second, err := cat.GetVideo(ctx, "video-2")
-		if err != nil {
-			t.Fatalf("get video-2: %v", err)
-		}
-		if first.ThumbnailURL != "" && second.ThumbnailURL != "" &&
-			first.PreviewStatus == "ready" && second.PreviewStatus == "ready" {
-			events := gen.Events()
-			if len(events) != 4 {
-				t.Fatalf("events = %#v, want 4 generation events", events)
+		if got.PreviewStatus == "ready" {
+			if got.ThumbnailURL != "" {
+				t.Fatalf("thumbnail url = %q, want preview ready while thumbnail is still blocked", got.ThumbnailURL)
 			}
-			for i, event := range events[:2] {
-				if event[:6] != "thumb:" {
-					t.Fatalf("event %d = %q, want thumbnail before previews; all events=%#v", i, event, events)
-				}
-			}
-			for i, event := range events[2:] {
-				if event[:8] != "preview:" {
-					t.Fatalf("event %d = %q, want previews after thumbnails; all events=%#v", i+2, event, events)
-				}
-			}
+			close(gen.release)
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	t.Fatalf("generation did not finish, events=%#v", gen.Events())
+	got, err := cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		t.Fatalf("get video after timeout: %v", err)
+	}
+	t.Fatalf("preview status=%q thumbnail=%q, want preview ready before thumbnail finishes", got.PreviewStatus, got.ThumbnailURL)
 }
 
 func TestRegisterPreviewWorkersBackfillsHistoricalFingerprints(t *testing.T) {
@@ -218,6 +222,126 @@ func TestRegisterPreviewWorkersBackfillsHistoricalFingerprints(t *testing.T) {
 		t.Fatalf("get video after timeout: %v", err)
 	}
 	t.Fatalf("fingerprint status=%q sampled=%q, want ready with hash", got.FingerprintStatus, got.SampledSHA256)
+}
+
+func TestRunScanStartsFingerprintBeforeThumbnailAndPreviewDrain(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+	seedDriveWithTeaser(t, cat, "drive-id", true)
+
+	dataPath := filepath.Join(t.TempDir(), "scan-video.mp4")
+	data := []byte("scan video content for independent fingerprint")
+	if err := os.WriteFile(dataPath, data, 0o644); err != nil {
+		t.Fatalf("write video data: %v", err)
+	}
+
+	drv := &serverScanFingerprintFakeDrive{
+		serverFingerprintFakeDrive: serverFingerprintFakeDrive{path: dataPath},
+		entries: []drives.Entry{{
+			ID:       "file-id",
+			Name:     "scan-video.mp4",
+			Size:     int64(len(data)),
+			ParentID: "root",
+		}},
+	}
+	registry := proxy.NewRegistry()
+	registry.Set("drive-id", drv)
+
+	gen := &serverFakeTeaserGenerator{}
+	worker := preview.NewWorker(gen, cat, drv)
+	thumbWorker := preview.NewThumbWorker(gen, cat, drv)
+	fingerprintWorker := fingerprint.NewWorker(cat, drv, fingerprint.Config{})
+	go fingerprintWorker.Run(ctx)
+
+	app := &App{
+		cfg: &config.Config{
+			Scanner: config.Scanner{VideoExtensions: []string{".mp4"}},
+		},
+		cat:                cat,
+		registry:           registry,
+		workers:            map[string]*preview.Worker{"drive-id": worker},
+		thumbWorkers:       map[string]*preview.ThumbWorker{"drive-id": thumbWorker},
+		fingerprintWorkers: map[string]*fingerprint.Worker{"drive-id": fingerprintWorker},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app.runScan(ctx, "drive-id")
+	}()
+
+	videoID := "fake-drive-id-file-id"
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := cat.GetVideo(ctx, videoID)
+		if err == nil && got.SampledSHA256 != "" && got.FingerprintStatus == "ready" {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("scan did not stop after context cancel")
+			}
+			if got.ThumbnailURL != "" {
+				t.Fatalf("thumbnail url = %q, want fingerprint before thumbnail generation", got.ThumbnailURL)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("scan did not stop after context cancel")
+	}
+	got, err := cat.GetVideo(context.Background(), videoID)
+	if err != nil {
+		t.Fatalf("get video after timeout: %v", err)
+	}
+	t.Fatalf("fingerprint status=%q sampled=%q, want ready before thumbnail/preview drain", got.FingerprintStatus, got.SampledSHA256)
+}
+
+func TestNightlyTargetsComeFromCatalogBeforeDriveAttach(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	for _, d := range []*catalog.Drive{
+		{ID: "115", Kind: "p115", Name: "115", RootID: "0", TeaserEnabled: true},
+		{ID: "pikpak", Kind: "pikpak", Name: "PikPak", RootID: "0", TeaserEnabled: true},
+		{ID: "91-spider", Kind: "spider91", Name: "91 Spider", RootID: "0", TeaserEnabled: true},
+	} {
+		if err := cat.UpsertDrive(ctx, d); err != nil {
+			t.Fatalf("seed drive %s: %v", d.ID, err)
+		}
+	}
+
+	app := &App{cat: cat}
+	scanIDs := app.listScanTargetIDs(ctx)
+	if len(scanIDs) != 2 || scanIDs[0] != "115" || scanIDs[1] != "pikpak" {
+		t.Fatalf("scan target ids = %#v, want 115 and pikpak from catalog", scanIDs)
+	}
+	spiderIDs := app.listSpider91DriveIDs(ctx)
+	if len(spiderIDs) != 1 || spiderIDs[0] != "91-spider" {
+		t.Fatalf("spider91 ids = %#v, want catalog spider drive", spiderIDs)
+	}
 }
 
 func TestFailedThumbnailsDoNotBlockPreviewGeneration(t *testing.T) {
@@ -687,6 +811,28 @@ func (g *serverFakeTeaserGenerator) GenerateThumbnail(_ context.Context, _ *driv
 	return "/tmp/" + videoID + ".jpg", nil
 }
 
+type serverBlockingThumbGenerator struct {
+	serverFakeTeaserGenerator
+	started chan string
+	release chan struct{}
+}
+
+func (g *serverBlockingThumbGenerator) GenerateThumbnail(ctx context.Context, _ *drives.StreamLink, videoID string, _ float64) (string, error) {
+	g.record("thumb:" + videoID)
+	if g.started != nil {
+		select {
+		case g.started <- videoID:
+		default:
+		}
+	}
+	select {
+	case <-g.release:
+		return "/tmp/" + videoID + ".jpg", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
 type serverFakeDrive struct{}
 
 func (d *serverFakeDrive) Kind() string { return "fake" }
@@ -718,6 +864,15 @@ type serverFingerprintFakeDrive struct {
 
 func (d *serverFingerprintFakeDrive) StreamURL(context.Context, string) (*drives.StreamLink, error) {
 	return &drives.StreamLink{URL: d.path}, nil
+}
+
+type serverScanFingerprintFakeDrive struct {
+	serverFingerprintFakeDrive
+	entries []drives.Entry
+}
+
+func (d *serverScanFingerprintFakeDrive) List(context.Context, string) ([]drives.Entry, error) {
+	return d.entries, nil
 }
 
 type serverLocalUploadFakeDrive struct {
