@@ -54,7 +54,7 @@
 
 ## 快速开始
 
-一键安装：
+### 一键安装脚本（推荐）
 
 ```bash
 sudo apt update
@@ -96,15 +96,77 @@ sudo bash /tmp/install-91.sh update
 FRONTEND_PORT=8080 sudo -E bash install.sh
 ```
 
+### Docker Compose 部署
+
+准备目录：
+
+```bash
+mkdir -p video-site-91
+cd video-site-91
+```
+
+创建 `docker-compose.yml`：
+
+```yaml
+services:
+  video-site-91:
+    image: ghcr.io/nianzhibai/91:latest
+    container_name: video-site-91
+    ports:
+      - "9191:9191"
+    volumes:
+      - ./data:/opt/video-site-91/data
+    restart: unless-stopped
+```
+
+启动：
+
+```bash
+docker compose up -d
+```
+
+部署完成后访问：
+
+- 前台：`http://服务器IP:9191/`
+- 后台：`http://服务器IP:9191/admin`
+
+所有配置、数据库、封面、预览、上传文件都会保存在当前目录的 `./data` 里。更新时执行：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+查看日志：
+
+```bash
+docker compose logs -f
+```
+
+如果只想下载仓库内置的 Compose 文件：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nianzhibai/91/main/docker-compose.yml -o docker-compose.yml
+docker compose up -d
+```
+
 ---
 
 ## 数据存放位置
 
-项目会把运行数据保存在本地：
+一键安装脚本会把运行数据保存在宿主机：
 
 - `/opt/video-site-91/config.yaml`：本地配置、管理员账号、网盘凭证。
 - `/opt/video-site-91/data/video-site.db`：SQLite 数据库。
 - `/opt/video-site-91/data/previews/`：本地生成的封面和 teaser。
+
+Docker Compose 部署会把运行数据保存在当前目录的 `./data/`：
+
+- `./data/config.yaml`：本地配置、管理员账号、网盘凭证。
+- `./data/video-site.db`：SQLite 数据库。
+- `./data/previews/`：本地生成的封面和 teaser。
+- `./data/uploads/`：本地上传的视频文件。
+- `./data/spider91/`：91 爬虫本地保存的视频文件。
 
 ---
 
