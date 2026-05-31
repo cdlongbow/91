@@ -312,16 +312,113 @@ func TestCtxCancelPreventsLaterPhases(t *testing.T) {
 func TestTriggerNowIsNonBlocking(t *testing.T) {
 	r := New(Config{Settings: newStubSettings()})
 	// fill the trigger channel
-	r.TriggerNow()
+	if !r.TriggerNow() {
+		t.Fatal("first TriggerNow should be accepted")
+	}
 	// Second call must not block
 	done := make(chan struct{})
+	var accepted bool
 	go func() {
-		r.TriggerNow()
+		accepted = r.TriggerNow()
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("TriggerNow blocked when channel is full")
+	}
+	if accepted {
+		t.Fatal("second TriggerNow should be ignored when trigger channel is full")
+	}
+}
+
+func TestStatusTracksQueuedRunningAndFinished(t *testing.T) {
+	blockScan := make(chan struct{})
+	scanStarted := make(chan struct{})
+	var startedOnce sync.Once
+	r := New(Config{
+		Settings: newStubSettings(),
+		ListScanTargets: func(context.Context) []string {
+			return []string{"drive"}
+		},
+		RunScan: func(context.Context, string) {
+			startedOnce.Do(func() { close(scanStarted) })
+			<-blockScan
+		},
+	})
+
+	if got := r.Status(); got.State != "idle" || got.Running || got.Queued {
+		t.Fatalf("initial status = %#v, want idle", got)
+	}
+
+	if !r.TriggerNow() {
+		t.Fatal("TriggerNow should queue a manual run")
+	}
+	if got := r.Status(); got.State != "queued" || got.Running || !got.Queued {
+		t.Fatalf("queued status = %#v, want queued", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.Run(ctx)
+
+	select {
+	case <-scanStarted:
+	case <-time.After(time.Second):
+		t.Fatal("pipeline did not start")
+	}
+
+	if got := r.Status(); got.State != "running" || !got.Running || got.Queued || got.StartedAt.IsZero() {
+		t.Fatalf("running status = %#v, want running with startedAt", got)
+	}
+
+	if r.TriggerNow() {
+		t.Fatal("TriggerNow during a run should be ignored")
+	}
+	if got := r.Status(); got.State != "running" || !got.Running || got.Queued {
+		t.Fatalf("status after ignored trigger = %#v, want running", got)
+	}
+
+	close(blockScan)
+	deadline := time.After(time.Second)
+	for {
+		got := r.Status()
+		if !got.Running && !got.Queued && !got.LastFinishedAt.IsZero() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("status did not finish; got=%#v", got)
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+func TestTriggerNowAcceptsOnlyOneConcurrentRequest(t *testing.T) {
+	r := New(Config{Settings: newStubSettings()})
+
+	const callers = 16
+	start := make(chan struct{})
+	results := make(chan bool, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			<-start
+			results <- r.TriggerNow()
+		}()
+	}
+	close(start)
+
+	accepted := 0
+	for i := 0; i < callers; i++ {
+		if <-results {
+			accepted++
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("accepted triggers = %d, want 1", accepted)
+	}
+	if got := r.Status(); got.State != "queued" || got.Running || !got.Queued {
+		t.Fatalf("status = %#v, want one queued trigger", got)
 	}
 }

@@ -59,8 +59,10 @@ type AdminServer struct {
 	SetSpider91UploadDriveID func(driveID string) error
 	// OnRunNightlyJob 触发一次完整的凌晨流水线（Phase1 扫盘 + Phase2 91 爬虫 +
 	// Phase3 迁移）。立即返回 —— 实际任务在后台跑，admin 在日志或下次状态查询里
-	// 看进度。若流水线正在跑，Runner 最多保留一个待触发请求，当前轮结束后再跑一轮。
-	OnRunNightlyJob func()
+	// 看进度。若流水线正在跑或已排队，Runner 会拒绝重复触发。
+	OnRunNightlyJob func() bool
+	// GetNightlyJobStatus 返回凌晨流水线当前状态，用于前端禁用重复触发按钮。
+	GetNightlyJobStatus func() NightlyJobStatus
 	// ListDriveDirChildren 列出某个 drive 在 parentID 目录下的直接子目录。
 	// parentID 为空时使用 drive 的 RootID。返回 (子目录列表, error)。
 	// 用于"设置跳过目录"弹窗按需展开浏览网盘目录树；只返回目录条目，文件忽略。
@@ -85,6 +87,14 @@ type DriveGenerationStatuses struct {
 	Thumbnail   GenerationStatus `json:"thumbnail"`
 	Preview     GenerationStatus `json:"preview"`
 	Fingerprint GenerationStatus `json:"fingerprint"`
+}
+
+type NightlyJobStatus struct {
+	State          string `json:"state"`
+	Running        bool   `json:"running"`
+	Queued         bool   `json:"queued"`
+	StartedAt      string `json:"startedAt,omitempty"`
+	LastFinishedAt string `json:"lastFinishedAt,omitempty"`
 }
 
 func (a *AdminServer) Register(r chi.Router) {
@@ -129,6 +139,7 @@ func (a *AdminServer) Register(r chi.Router) {
 
 			// 运维任务
 			r.Get("/update/check", a.handleCheckUpdate)
+			r.Get("/jobs/nightly/status", a.handleNightlyJobStatus)
 			r.Post("/jobs/nightly/run", a.handleRunNightlyJob)
 		})
 	})
@@ -560,12 +571,32 @@ func (a *AdminServer) handleRescan(w http.ResponseWriter, r *http.Request) {
 
 // handleRunNightlyJob 触发一次完整的凌晨流水线（不论当前时间，不论今日是否已跑）。
 // 立即返回 202；进度通过 backend 日志和下次 GET /admin/api/drives 的状态变化观察。
-// 流水线已在跑时 Runner 最多排队一个后续触发；如果已有待触发请求，新的点击会被忽略。
+// 流水线已在跑或已排队时，Runner 会拒绝重复触发。
 func (a *AdminServer) handleRunNightlyJob(w http.ResponseWriter, r *http.Request) {
+	accepted := false
 	if a.OnRunNightlyJob != nil {
-		a.OnRunNightlyJob()
+		accepted = a.OnRunNightlyJob()
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"ok":       true,
+		"accepted": accepted,
+		"status":   a.nightlyJobStatus(),
+	})
+}
+
+func (a *AdminServer) handleNightlyJobStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.nightlyJobStatus())
+}
+
+func (a *AdminServer) nightlyJobStatus() NightlyJobStatus {
+	if a.GetNightlyJobStatus == nil {
+		return NightlyJobStatus{State: "idle"}
+	}
+	status := a.GetNightlyJobStatus()
+	if status.State == "" {
+		status.State = "idle"
+	}
+	return status
 }
 
 // teaserEnabledReq 是 POST /admin/api/drives/{id}/teaser-enabled 的入参。

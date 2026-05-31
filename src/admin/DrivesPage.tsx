@@ -65,10 +65,31 @@ const emptyForm: FormState = {
   spider91UploadDriveId: "",
 };
 
+const idleNightlyStatus: api.NightlyJobStatus = {
+  state: "idle",
+  running: false,
+  queued: false,
+};
+
+function nightlyButtonText(status: api.NightlyJobStatus, triggering: boolean) {
+  if (triggering) return "触发中...";
+  if (status.running) return "扫描运行中";
+  if (status.queued) return "扫描已排队";
+  return "扫描所有网盘";
+}
+
+function nightlyBusyText(status: api.NightlyJobStatus) {
+  if (status.running) return "扫描任务正在运行";
+  if (status.queued) return "扫描任务已排队";
+  return "";
+}
+
 export function DrivesPage() {
   const [list, setList] = useState<api.AdminDrive[]>([]);
   const [storage, setStorage] = useState<api.AdminDriveStorage | null>(null);
   const [settings, setSettings] = useState<api.Settings | null>(null);
+  const [nightlyStatus, setNightlyStatus] =
+    useState<api.NightlyJobStatus>(idleNightlyStatus);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState<FormState>(emptyForm);
@@ -82,6 +103,7 @@ export function DrivesPage() {
   const [scanningAll, setScanningAll] = useState(false);
   const [selectedDriveId, setSelectedDriveId] = useState<string | null>(null);
   const { show } = useToast();
+  const nightlyBusy = scanningAll || nightlyStatus.running || nightlyStatus.queued;
 
   // 当前系统中可作为 spider91 上传目标的 drive 列表（pikpak ∪ p115 ∪ onedrive）。
   // 用户保存 spider91 drive 时从这里挑一个；空表示本地保存不上传。
@@ -93,14 +115,16 @@ export function DrivesPage() {
   async function refresh() {
     setLoading(true);
     try {
-      const [data, storageData, settingsData] = await Promise.all([
+      const [data, storageData, settingsData, jobStatus] = await Promise.all([
         api.listDrives(),
         api.getDriveStorage(),
         api.getSettings().catch(() => null),
+        api.getNightlyJobStatus().catch(() => null),
       ]);
       setList(data ?? []);
       setStorage(storageData);
       if (settingsData) setSettings(settingsData);
+      if (jobStatus) setNightlyStatus(jobStatus);
     } catch (e) {
       show(e instanceof Error ? e.message : "加载失败", "error");
     } finally {
@@ -110,8 +134,12 @@ export function DrivesPage() {
 
   async function refreshDriveList() {
     try {
-      const data = await api.listDrives();
+      const [data, jobStatus] = await Promise.all([
+        api.listDrives(),
+        api.getNightlyJobStatus().catch(() => null),
+      ]);
       setList(data ?? []);
+      if (jobStatus) setNightlyStatus(jobStatus);
     } catch {
       // 保持当前页面状态，下一次轮询或手动操作再刷新。
     }
@@ -235,13 +263,22 @@ export function DrivesPage() {
   /**
    * 立即触发完整凌晨流水线（Phase1 扫所有云盘 → Phase2 spider91 爬虫 →
    * Phase3 spider91 → 云盘迁移）。后端立即返回 202；进度看 backend 日志。
-   * 如果当前已有流水线在跑，后端最多保留一个待触发请求，当前轮结束后再跑一轮。
+   * 如果当前已有流水线在跑或已排队，前端只提示，不再提交新任务。
    */
   async function handleRunNightly() {
+    if (nightlyBusy) {
+      show(nightlyBusyText(nightlyStatus) || "当前已有扫描所有网盘任务", "info");
+      return;
+    }
     setScanningAll(true);
     try {
-      await api.runNightlyJob();
-      show("已触发扫描所有网盘，耗时较长，可在 backend 日志观察进度", "success");
+      const resp = await api.runNightlyJob();
+      setNightlyStatus(resp.status);
+      if (resp.accepted) {
+        show("已触发扫描所有网盘，耗时较长，可在任务状态和 backend 日志观察进度", "success");
+      } else {
+        show("当前已有扫描所有网盘任务", "info");
+      }
     } catch (e) {
       show(e instanceof Error ? e.message : "触发失败", "error");
     } finally {
@@ -593,9 +630,9 @@ export function DrivesPage() {
             className="admin-btn"
             onClick={handleRunNightly}
             disabled={scanningAll}
-            title="立即扫描所有网盘。耗时较长，期间不要重复触发。"
+            title={nightlyBusyText(nightlyStatus) || "立即扫描所有网盘。耗时较长，期间不要重复触发。"}
           >
-            <PlayCircle size={14} /> {scanningAll ? "扫描中…" : "扫描所有网盘"}
+            <PlayCircle size={14} /> {nightlyButtonText(nightlyStatus, scanningAll)}
           </button>
           <button className="admin-btn is-primary" onClick={openCreate}>
             <Plus size={14} /> 新建网盘

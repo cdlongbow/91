@@ -205,10 +205,14 @@ func main() {
 		SetSpider91UploadDriveID: func(id string) error {
 			return app.SetSpider91UploadDriveID(ctx, id)
 		},
-		OnRunNightlyJob: func() {
+		OnRunNightlyJob: func() bool {
 			if app.nightlyRunner != nil {
-				app.nightlyRunner.TriggerNow()
+				return app.nightlyRunner.TriggerNow()
 			}
+			return false
+		},
+		GetNightlyJobStatus: func() api.NightlyJobStatus {
+			return app.nightlyJobStatus()
 		},
 		ListDriveDirChildren: func(reqCtx context.Context, driveID, parentID string) ([]api.DriveDirEntry, error) {
 			return app.listDriveDirChildren(reqCtx, driveID, parentID)
@@ -415,6 +419,27 @@ func (a *App) SetSpider91UploadDriveID(ctx context.Context, driveID string) erro
 	a.spider91UploadDriveID = driveID
 	a.mu.Unlock()
 	return a.cat.SetSetting(ctx, "spider91.upload_drive_id", driveID)
+}
+
+func (a *App) nightlyJobStatus() api.NightlyJobStatus {
+	if a.nightlyRunner == nil {
+		return api.NightlyJobStatus{State: "idle"}
+	}
+	status := a.nightlyRunner.Status()
+	return api.NightlyJobStatus{
+		State:          status.State,
+		Running:        status.Running,
+		Queued:         status.Queued,
+		StartedAt:      formatOptionalRFC3339(status.StartedAt),
+		LastFinishedAt: formatOptionalRFC3339(status.LastFinishedAt),
+	}
+}
+
+func formatOptionalRFC3339(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
 }
 
 // isSpider91UploadKind 是 spider91 迁移目标盘的 allowlist。

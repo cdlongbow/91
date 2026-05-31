@@ -376,10 +376,25 @@ export function updateSettings(body: Partial<Settings>) {
 
 /**
  * 立即触发一次完整的凌晨流水线（Phase1 扫盘 + Phase2 91 爬虫 + Phase3 迁移），
- * 不论当前时间或今日是否已跑。立即返回 202；进度通过 backend 日志观察。
+ * 不论当前时间或今日是否已跑。立即返回 202；进度通过任务状态和 backend 日志观察。
  *
- * 流水线已在跑时后端最多保留一个待触发请求；已有待触发请求时，新的点击会被忽略。
+ * 流水线已在跑或已排队时，后端会拒绝重复触发。
  */
+export type NightlyJobStatus = {
+  state: "idle" | "queued" | "running" | "running_queued";
+  running: boolean;
+  queued: boolean;
+  startedAt?: string;
+  lastFinishedAt?: string;
+};
+
+export function getNightlyJobStatus() {
+  return request<NightlyJobStatus>("/jobs/nightly/status");
+}
+
 export function runNightlyJob() {
-  return request<{ ok: boolean }>("/jobs/nightly/run", { method: "POST" });
+  return request<{ ok: boolean; accepted: boolean; status: NightlyJobStatus }>(
+    "/jobs/nightly/run",
+    { method: "POST" }
+  );
 }

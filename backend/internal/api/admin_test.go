@@ -243,6 +243,58 @@ func TestInstalledVersionPrefersDockerImageVersionOverVersionFile(t *testing.T) 
 	}
 }
 
+func TestHandleRunNightlyJobReturnsAcceptedStatus(t *testing.T) {
+	called := false
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/jobs/nightly/run", nil)
+	rr := httptest.NewRecorder()
+
+	(&AdminServer{
+		OnRunNightlyJob: func() bool {
+			called = true
+			return true
+		},
+		GetNightlyJobStatus: func() NightlyJobStatus {
+			return NightlyJobStatus{State: "queued", Queued: true}
+		},
+	}).handleRunNightlyJob(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body = %s", rr.Code, rr.Body.String())
+	}
+	if !called {
+		t.Fatal("OnRunNightlyJob was not called")
+	}
+	var got struct {
+		OK       bool             `json:"ok"`
+		Accepted bool             `json:"accepted"`
+		Status   NightlyJobStatus `json:"status"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.OK || !got.Accepted || got.Status.State != "queued" || !got.Status.Queued {
+		t.Fatalf("response = %#v, want accepted queued status", got)
+	}
+}
+
+func TestHandleNightlyJobStatusDefaultsToIdle(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/jobs/nightly/status", nil)
+	rr := httptest.NewRecorder()
+
+	(&AdminServer{}).handleNightlyJobStatus(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	var got NightlyJobStatus
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.State != "idle" || got.Running || got.Queued {
+		t.Fatalf("status = %#v, want idle", got)
+	}
+}
+
 func TestHandleUpsertDrivePreservesExistingCredentialsWhenRequestCredentialsEmpty(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
