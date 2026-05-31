@@ -42,7 +42,6 @@ type FormState = {
   kind: Kind;
   name: string;
   rootId: string;
-  scanRootId: string;
   creds: Record<string, string>;
   /**
    * spider91 专用字段：把视频迁移到云盘的目标 drive ID。
@@ -59,8 +58,7 @@ const emptyForm: FormState = {
   id: "",
   kind: "p115",
   name: "",
-  rootId: "0",
-  scanRootId: "0",
+  rootId: "",
   creds: {},
   spider91UploadDriveId: "",
 };
@@ -171,7 +169,6 @@ export function DrivesPage() {
       kind: d.kind,
       name: d.name,
       rootId: d.rootId,
-      scanRootId: d.scanRootId || d.rootId,
       creds: {},
       spider91UploadDriveId: settings?.spider91UploadDriveId ?? "",
     });
@@ -188,6 +185,7 @@ export function DrivesPage() {
     const driveID = existing
       ? form.id
       : makeUniqueDriveId(form.kind, name, list);
+    const rootId = form.rootId.trim() || defaultRootId(form.kind);
     // 若编辑且没有提供凭证，提示一下但仍允许保存（不改凭证）
     setSaving(true);
     try {
@@ -195,8 +193,7 @@ export function DrivesPage() {
         id: driveID,
         kind: form.kind,
         name,
-        rootId: form.rootId || defaultRootId(form.kind),
-        scanRootId: form.scanRootId || form.rootId || defaultRootId(form.kind),
+        rootId,
         credentials: form.creds,
       });
 
@@ -403,10 +400,6 @@ export function DrivesPage() {
                     <div className="admin-detail-row">
                       <span className="admin-detail-label">根目录 ID</span>
                       <span className="admin-detail-value admin-mono-cell">{d.rootId}</span>
-                    </div>
-                    <div className="admin-detail-row">
-                      <span className="admin-detail-label">扫描起点 ID</span>
-                      <span className="admin-detail-value admin-mono-cell">{d.scanRootId || d.rootId}</span>
                     </div>
                   </>
                 )}
@@ -906,11 +899,6 @@ function DriveForm({
 }) {
   const fields = useMemo(() => credentialFields(form.kind), [form.kind]);
   const help = credentialHelp(form.kind, isEdit);
-  const showDirectoryFields =
-    form.kind !== "spider91" &&
-    form.kind !== "onedrive" &&
-    form.kind !== "localstorage" &&
-    form.kind !== "pikpak";
 
   function set<K extends keyof FormState>(k: K, v: FormState[K]) {
     onChange({ ...form, [k]: v });
@@ -922,8 +910,7 @@ function DriveForm({
     onChange({
       ...form,
       kind: v,
-      rootId: defaultRootId(v),
-      scanRootId: defaultRootId(v),
+      rootId: "",
       creds: {},
     });
   }
@@ -955,29 +942,17 @@ function DriveForm({
           <option value="wopan">联通沃盘</option>
         </select>
       </div>
-      {showDirectoryFields && (
-        <>
-          <div className="admin-form__row">
-            <label>根目录 ID</label>
-            <input
-              value={form.rootId}
-              onChange={(e) => set("rootId", e.target.value)}
-              placeholder={form.kind === "pikpak" ? "留空表示根目录" : form.kind === "onedrive" || form.kind === "googledrive" ? "root" : "0"}
-            />
-          </div>
-          <div className="admin-form__row">
-            <label>扫描起点目录 ID</label>
-            <input
-              value={form.scanRootId}
-              onChange={(e) => set("scanRootId", e.target.value)}
-              placeholder="留空则使用根目录"
-            />
-            <div className="admin-form__help">
-              可以指定一个子目录作为视频库入口，避免扫描整个网盘
-            </div>
-          </div>
-        </>
-      )}
+      <div className="admin-form__row">
+        <label>根目录 ID</label>
+        <input
+          value={form.rootId}
+          onChange={(e) => set("rootId", e.target.value)}
+          placeholder={rootIdPlaceholder(form.kind)}
+        />
+        <div className="admin-form__help">
+          留空时使用该网盘类型的默认根目录，具体目录ID获取方式请参考OpenList文档
+        </div>
+      </div>
 
       {(help || fields.length > 0) && (
         <>
@@ -1192,6 +1167,11 @@ function defaultRootId(kind: Kind): string {
   if (kind === "localstorage") return "/";
   if (kind === "spider91") return "/";
   return "0";
+}
+
+function rootIdPlaceholder(kind: Kind): string {
+  const rootId = defaultRootId(kind);
+  return rootId ? `默认：${rootId}` : "留空表示根目录";
 }
 
 

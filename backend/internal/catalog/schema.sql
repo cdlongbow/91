@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS drives (
     kind          TEXT NOT NULL,                -- quark / p115 / pikpak / wopan / onedrive / googledrive / localstorage / spider91
     name          TEXT NOT NULL,
     root_id       TEXT NOT NULL DEFAULT '0',
-    scan_root_id  TEXT,                          -- 扫描起点（默认 root_id）
+    scan_root_id  TEXT,                          -- deprecated: 扫描起点固定等于 root_id
     credentials   TEXT,                          -- JSON: cookie / refresh_token 等
     status        TEXT DEFAULT 'disconnected',   -- disconnected / ok / error
     last_error    TEXT,

@@ -1393,10 +1393,11 @@ func (c *Catalog) ClearGeneratedAssets(ctx context.Context, videoID string, clea
 // ---------- Drive ----------
 
 type Drive struct {
-	ID          string            `json:"id"`
-	Kind        string            `json:"kind"`
-	Name        string            `json:"name"`
-	RootID      string            `json:"rootId"`
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	RootID string `json:"rootId"`
+	// Deprecated: 扫描入口固定等于 RootID；字段保留用于兼容旧数据/API。
 	ScanRootID  string            `json:"scanRootId"`
 	Credentials map[string]string `json:"credentials,omitempty"`
 	Status      string            `json:"status"`
@@ -1414,6 +1415,7 @@ type Drive struct {
 }
 
 func (c *Catalog) UpsertDrive(ctx context.Context, d *Drive) error {
+	normalizeDriveRootFields(d)
 	cred, _ := json.Marshal(d.Credentials)
 	skipDirs := d.SkipDirIDs
 	if skipDirs == nil {
@@ -1444,6 +1446,49 @@ ON CONFLICT(id) DO UPDATE SET
 	return err
 }
 
+func normalizeDriveRootFields(d *Drive) {
+	if d == nil {
+		return
+	}
+	d.RootID = normalizeDriveRootID(d.Kind, d.RootID)
+	d.ScanRootID = d.RootID
+}
+
+func normalizeDriveRootID(kind, rootID string) string {
+	rootID = strings.TrimSpace(rootID)
+	switch kind {
+	case "pikpak":
+		if rootID == "0" {
+			return ""
+		}
+		return rootID
+	case "onedrive", "googledrive":
+		if rootID == "" {
+			return "root"
+		}
+		return rootID
+	case "localstorage", "spider91":
+		if rootID == "" {
+			return "/"
+		}
+		return rootID
+	default:
+		if rootID == "" {
+			return "0"
+		}
+		return rootID
+	}
+}
+
+func (c *Catalog) syncDriveScanRootIDToRootID(ctx context.Context) error {
+	_, err := c.db.ExecContext(ctx, `
+UPDATE drives
+   SET scan_root_id = root_id,
+       updated_at = ?
+ WHERE COALESCE(scan_root_id, '') != COALESCE(root_id, '')`, time.Now().UnixMilli())
+	return err
+}
+
 func (c *Catalog) ListDrives(ctx context.Context) ([]*Drive, error) {
 	rows, err := c.db.QueryContext(ctx, `SELECT id, kind, name, root_id, COALESCE(scan_root_id, ''), COALESCE(credentials, '{}'), status, COALESCE(last_error, ''), COALESCE(teaser_enabled, 1), COALESCE(skip_dir_ids, '[]'), created_at, updated_at FROM drives ORDER BY created_at ASC`)
 	if err != nil {
@@ -1461,6 +1506,7 @@ func (c *Catalog) ListDrives(ctx context.Context) ([]*Drive, error) {
 		}
 		_ = json.Unmarshal([]byte(credsStr), &d.Credentials)
 		_ = json.Unmarshal([]byte(skipDirsStr), &d.SkipDirIDs)
+		normalizeDriveRootFields(d)
 		d.TeaserEnabled = teaserEnabled != 0
 		d.CreatedAt = time.UnixMilli(createdAt)
 		d.UpdatedAt = time.UnixMilli(updatedAt)
@@ -1480,6 +1526,7 @@ func (c *Catalog) GetDrive(ctx context.Context, id string) (*Drive, error) {
 	}
 	_ = json.Unmarshal([]byte(credsStr), &d.Credentials)
 	_ = json.Unmarshal([]byte(skipDirsStr), &d.SkipDirIDs)
+	normalizeDriveRootFields(d)
 	d.TeaserEnabled = teaserEnabled != 0
 	d.CreatedAt = time.UnixMilli(createdAt)
 	d.UpdatedAt = time.UnixMilli(updatedAt)

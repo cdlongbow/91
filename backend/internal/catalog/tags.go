@@ -79,6 +79,9 @@ func (c *Catalog) migrate(ctx context.Context) error {
 	if err := c.addColumnIfMissing(ctx, "drives", "skip_dir_ids", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
+	if err := c.syncDriveScanRootIDToRootID(ctx); err != nil {
+		return err
+	}
 	// 一次性修正：早期版本（短暂存在过）会把现存 drive 的 teaser_enabled 同步成
 	// 旧的全局 preview.enabled 值，导致升级后所有 drive 都是关。"默认开启"约定下，
 	// 这里一次性把所有 drive 强制重置为 1，并用 marker setting 记号，避免之后

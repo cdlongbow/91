@@ -24,12 +24,14 @@ test("spider91 upload target uses explicit local-save option instead of auto tar
   assert.doesNotMatch(drivesPageSource, /自动模式/);
 });
 
-test("onedrive drive form only exposes required default-app fields", () => {
-  assert.match(
-    drivesPageSource,
-    /form\.kind !== "spider91" &&\s*form\.kind !== "onedrive" &&\s*form\.kind !== "localstorage" &&\s*form\.kind !== "pikpak"/
-  );
+test("drive form shows a root directory id field for all drive kinds", () => {
+  assert.match(drivesPageSource, /<label>根目录 ID<\/label>/);
+  assert.match(drivesPageSource, /placeholder=\{rootIdPlaceholder\(form\.kind\)\}/);
+  assert.doesNotMatch(drivesPageSource, /扫描起点目录 ID/);
+  assert.doesNotMatch(drivesPageSource, /set\("scanRootId"/);
+});
 
+test("onedrive drive form only exposes required default-app fields", () => {
   const match =
     /function credentialFields[\s\S]*?case "onedrive":\s*return \[([\s\S]*?)\];\s*case "googledrive":/.exec(
       drivesPageSource

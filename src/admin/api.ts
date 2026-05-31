@@ -80,7 +80,6 @@ export type AdminDrive = {
   kind: "quark" | "p115" | "pikpak" | "wopan" | "onedrive" | "googledrive" | "localstorage" | "spider91";
   name: string;
   rootId: string;
-  scanRootId: string;
   status: string;
   lastError?: string;
   hasCredential: boolean;
@@ -140,7 +139,6 @@ export type UpsertDriveInput = {
   kind: "quark" | "p115" | "pikpak" | "wopan" | "onedrive" | "googledrive" | "localstorage" | "spider91";
   name: string;
   rootId: string;
-  scanRootId: string;
   credentials: Record<string, string>;
   /**
    * 可选：写入"扫描跳过目录"集合。`undefined` 表示不变（沿用服务端旧值），

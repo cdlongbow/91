@@ -469,10 +469,11 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 }
 
 type upsertDriveReq struct {
-	ID          string            `json:"id"`
-	Kind        string            `json:"kind"`
-	Name        string            `json:"name"`
-	RootID      string            `json:"rootId"`
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	RootID string `json:"rootId"`
+	// Deprecated: 扫描起点已固定为 rootId；保留字段只为兼容旧客户端请求体。
 	ScanRootID  string            `json:"scanRootId"`
 	Credentials map[string]string `json:"credentials"`
 	// TeaserEnabled 是 per-drive teaser/封面生成开关。
@@ -530,7 +531,7 @@ func (a *AdminServer) handleUpsertDrive(w http.ResponseWriter, r *http.Request) 
 
 	d := &catalog.Drive{
 		ID: body.ID, Kind: body.Kind, Name: body.Name,
-		RootID: body.RootID, ScanRootID: body.ScanRootID,
+		RootID:        body.RootID,
 		Credentials:   body.Credentials,
 		Status:        "disconnected",
 		TeaserEnabled: teaserEnabled,

@@ -1048,9 +1048,8 @@ func (a *App) detachDrive(id string) {
 // listDriveDirChildren 实现 AdminServer.ListDriveDirChildren：
 // 列指定 drive 在 parentID 下的直接子目录，仅返回目录条目（IsDir=true），文件忽略。
 //
-// parentID 为空时使用 drive 实例的 RootID()，与扫描起点保持一致 —— 但有意不
-// 用 ScanRootID：用户在"设置跳过目录"弹窗里浏览的是整个网盘逻辑根，方便从 0
-// 起逐层挑跳过点；ScanRootID 仅用于实际扫描起点。
+// parentID 为空时使用 drive 实例的 RootID()。用户在"设置跳过目录"弹窗里
+// 浏览的是整个网盘逻辑根，方便从根目录起逐层挑跳过点。
 //
 // 性能优化：p115 的 Driver.List 走 SDK 的 ListWithLimit，会把目录里全部文件 +
 // 目录分页拉完才返回；某些 115 根目录累积了几万个视频，单次列目录可能卡几十
@@ -1160,7 +1159,7 @@ func (a *App) runScan(ctx context.Context, driveID string) {
 		}
 	}
 
-	// 使用 drive 的 scan_root_id，否则 root_id；同时把 admin 配置的 SkipDirIDs
+	// 扫描入口固定使用 drive 的 root_id；同时把 admin 配置的 SkipDirIDs
 	// 传给 scanner（命中即不递归）。
 	d, err := a.cat.GetDrive(ctx, driveID)
 	if err != nil {
@@ -1169,10 +1168,7 @@ func (a *App) runScan(ctx context.Context, driveID string) {
 	}
 	sc := scanner.New(a.cat, drv, a.cfg.Scanner.VideoExtensions, d.SkipDirIDs, onNew)
 
-	startID := d.ScanRootID
-	if startID == "" {
-		startID = d.RootID
-	}
+	startID := d.RootID
 
 	log.Printf("[scan] drive=%s start=%s skip_dirs=%d", driveID, startID, len(d.SkipDirIDs))
 	stats, err := sc.Run(ctx, startID)

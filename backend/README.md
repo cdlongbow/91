@@ -93,7 +93,6 @@ go run ./cmd/server 后端 9192
      "kind": "quark",
      "name": "我的夸克盘",
      "rootId": "0",
-     "scanRootId": "0",
      "credentials": {
        "cookie": "粘贴浏览器 F12 复制的 pan.quark.cn Cookie"
      }

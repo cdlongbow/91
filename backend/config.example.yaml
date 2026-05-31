@@ -79,7 +79,6 @@ preview:
 #   kind: "localstorage"
 #   name: "本地视频目录"
 #   root_id: "/"
-#   scan_root_id: "/"
 #   params:
 #     path: "/mnt/videos"
 drives: []

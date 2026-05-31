@@ -343,11 +343,49 @@ func TestHandleUpsertDrivePreservesExistingCredentialsWhenRequestCredentialsEmpt
 	if got.Name != "New name" {
 		t.Fatalf("name = %q, want New name", got.Name)
 	}
-	if got.ScanRootID != "scan-root" {
-		t.Fatalf("scanRootId = %q, want scan-root", got.ScanRootID)
+	if got.ScanRootID != "0" {
+		t.Fatalf("scanRootId = %q, want rootId 0", got.ScanRootID)
 	}
 	if got.Credentials["cookie"] != "existing-cookie" {
 		t.Fatalf("cookie credential = %q, want existing-cookie", got.Credentials["cookie"])
+	}
+}
+
+func TestHandleUpsertDriveDefaultsEmptyRootID(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", strings.NewReader(`{
+		"id": "onedrive-main",
+		"kind": "onedrive",
+		"name": "OneDrive",
+		"rootId": "",
+		"credentials": {"refresh_token": "token"}
+	}`))
+	rr := httptest.NewRecorder()
+
+	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	got, err := cat.GetDrive(ctx, "onedrive-main")
+	if err != nil {
+		t.Fatalf("get drive: %v", err)
+	}
+	if got.RootID != "root" {
+		t.Fatalf("rootId = %q, want root", got.RootID)
+	}
+	if got.ScanRootID != got.RootID {
+		t.Fatalf("scanRootId = %q, want rootId %q", got.ScanRootID, got.RootID)
 	}
 }
 
