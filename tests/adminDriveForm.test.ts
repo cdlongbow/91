@@ -31,7 +31,7 @@ test("onedrive drive form only exposes required default-app fields", () => {
   );
 
   const match =
-    /function credentialFields[\s\S]*?case "onedrive":\s*return \[([\s\S]*?)\];\s*case "spider91":/.exec(
+    /function credentialFields[\s\S]*?case "onedrive":\s*return \[([\s\S]*?)\];\s*case "googledrive":/.exec(
       drivesPageSource
     );
   assert.ok(match, "onedrive credential field block should be present");
@@ -43,6 +43,23 @@ test("onedrive drive form only exposes required default-app fields", () => {
   assert.doesNotMatch(fields, /key: "region"/);
   assert.doesNotMatch(fields, /key: "is_sharepoint"/);
   assert.doesNotMatch(fields, /key: "site_id"/);
+});
+
+test("googledrive drive form only exposes refresh token", () => {
+  assert.match(drivesPageSource, /<option value="googledrive">Google Drive<\/option>/);
+
+  const match =
+    /case "googledrive":\s*return \[([\s\S]*?)\];\s*case "localstorage":/.exec(
+      drivesPageSource
+    );
+  assert.ok(match, "googledrive credential field block should be present");
+  const fields = match[1];
+
+  assert.match(fields, /key: "refresh_token"/);
+  assert.doesNotMatch(fields, /key: "access_token"/);
+  assert.doesNotMatch(fields, /key: "api_url_address"/);
+  assert.doesNotMatch(fields, /key: "client_id"/);
+  assert.doesNotMatch(fields, /key: "client_secret"/);
 });
 
 test("pikpak drive form only exposes account login fields", () => {
@@ -82,12 +99,13 @@ test("drive type selector keeps primary source order", () => {
     drivesPageSource.matchAll(/<option value="([^"]+)">([^<]+)<\/option>/g),
     (match) => ({ value: match[1], label: match[2] })
   );
-  const driveOptions = options.slice(0, 7);
+  const driveOptions = options.slice(0, 8);
 
   assert.deepEqual(driveOptions, [
     { value: "p115", label: "115 网盘" },
     { value: "pikpak", label: "PikPak" },
     { value: "onedrive", label: "OneDrive" },
+    { value: "googledrive", label: "Google Drive" },
     { value: "localstorage", label: "本地存储" },
     { value: "spider91", label: "91 Spider" },
     { value: "quark", label: "夸克网盘" },

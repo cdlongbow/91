@@ -59,11 +59,18 @@ preview:
   width: 480
 
 # 盘列表。上线后请通过管理后台添加，本文件可留空。
-# kind 支持 quark / p115 / pikpak / wopan / onedrive / localstorage。
+# kind 支持 quark / p115 / pikpak / wopan / onedrive / googledrive / localstorage。
 # OneDrive 示例：
 # - id: "my-onedrive"
 #   kind: "onedrive"
 #   name: "我的 OneDrive"
+#   root_id: "root"
+#   params:
+#     refresh_token: "..."
+# Google Drive 示例：
+# - id: "my-google"
+#   kind: "googledrive"
+#   name: "我的 Google Drive"
 #   root_id: "root"
 #   params:
 #     refresh_token: "..."

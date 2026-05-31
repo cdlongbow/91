@@ -900,6 +900,8 @@ func driveKindLabel(kind string) string {
 		return "联通沃盘"
 	case "onedrive":
 		return "OneDrive"
+	case "googledrive":
+		return "Google Drive"
 	case localstorage.Kind:
 		return "本地存储"
 	case spider91.Kind:

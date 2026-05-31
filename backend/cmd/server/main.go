@@ -25,6 +25,7 @@ import (
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/config"
 	"github.com/video-site/backend/internal/drives"
+	"github.com/video-site/backend/internal/drives/googledrive"
 	"github.com/video-site/backend/internal/drives/localstorage"
 	"github.com/video-site/backend/internal/drives/localupload"
 	"github.com/video-site/backend/internal/drives/onedrive"
@@ -625,6 +626,27 @@ func (a *App) attachDriveUnlocked(ctx context.Context, d *catalog.Drive) error {
 			IsSharePoint: parseBoolDefault(d.Credentials["is_sharepoint"], false),
 			SiteID:       d.Credentials["site_id"],
 			RenewAPIURL:  d.Credentials["api_url_address"],
+			OnTokenUpdate: func(access, refresh string) {
+				if d.Credentials == nil {
+					d.Credentials = make(map[string]string)
+				}
+				d.Credentials["access_token"] = access
+				d.Credentials["refresh_token"] = refresh
+				_ = a.cat.UpsertDrive(ctx, d)
+			},
+		})
+	case googledrive.Kind:
+		drv = googledrive.New(googledrive.Config{
+			ID:           d.ID,
+			RootID:       d.RootID,
+			AccessToken:  d.Credentials["access_token"],
+			RefreshToken: d.Credentials["refresh_token"],
+			ClientID:     d.Credentials["client_id"],
+			ClientSecret: d.Credentials["client_secret"],
+			UseOnlineAPI: parseBoolDefault(d.Credentials["use_online_api"], true),
+			RenewAPIURL:  d.Credentials["api_url_address"],
+			OAuthURL:     d.Credentials["oauth_url"],
+			APIBaseURL:   d.Credentials["api_base_url"],
 			OnTokenUpdate: func(access, refresh string) {
 				if d.Credentials == nil {
 					d.Credentials = make(map[string]string)

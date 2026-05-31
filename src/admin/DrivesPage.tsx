@@ -26,6 +26,7 @@ const kindLabel: Record<string, string> = {
   pikpak: "PikPak",
   wopan: "联通沃盘",
   onedrive: "OneDrive",
+  googledrive: "Google Drive",
   localstorage: "本地存储",
   spider91: "91 爬虫",
 };
@@ -905,6 +906,7 @@ function DriveForm({
           <option value="p115">115 网盘</option>
           <option value="pikpak">PikPak</option>
           <option value="onedrive">OneDrive</option>
+          <option value="googledrive">Google Drive</option>
           <option value="localstorage">本地存储</option>
           <option value="spider91">91 Spider</option>
           <option value="quark">夸克网盘</option>
@@ -918,7 +920,7 @@ function DriveForm({
             <input
               value={form.rootId}
               onChange={(e) => set("rootId", e.target.value)}
-              placeholder={form.kind === "pikpak" ? "留空表示根目录" : form.kind === "onedrive" ? "root" : "0"}
+              placeholder={form.kind === "pikpak" ? "留空表示根目录" : form.kind === "onedrive" || form.kind === "googledrive" ? "root" : "0"}
             />
           </div>
           <div className="admin-form__row">
@@ -1031,6 +1033,8 @@ function credentialHelp(kind: Kind, isEdit: boolean): string {
       return `需要 access_token 和 refresh_token。后续会加扫码/短信登录入口，第一版只能手工粘贴。${note}`;
     case "onedrive":
       return `按 OpenList 默认应用在线挂载，只需要 refresh_token；保存时会自动刷新并保存 token。${note}`;
+    case "googledrive":
+      return `按 OpenList 在线 API 挂载，只需要 Google Drive refresh_token；保存时会自动刷新并保存 token。播放不走 302，会由后端带 Authorization 代理转发。${note}`;
     case "localstorage":
       return `把服务器上的一个已有目录作为视频来源扫描。填写绝对路径，例如 /mnt/videos；系统会读取该目录及子目录中的视频，并生成封面、Teaser 和指纹。${note}`;
     case "spider91":
@@ -1114,6 +1118,16 @@ function credentialFields(kind: Kind): Array<{
           required: true,
         },
       ];
+    case "googledrive":
+      return [
+        {
+          key: "refresh_token",
+          label: "refresh_token",
+          placeholder: "OpenList Google Drive refresh_token",
+          multiline: true,
+          required: true,
+        },
+      ];
     case "localstorage":
       return [
         {
@@ -1132,6 +1146,7 @@ function credentialFields(kind: Kind): Array<{
 function defaultRootId(kind: Kind): string {
   if (kind === "pikpak") return "";
   if (kind === "onedrive") return "root";
+  if (kind === "googledrive") return "root";
   if (kind === "localstorage") return "/";
   if (kind === "spider91") return "/";
   return "0";

@@ -2,7 +2,7 @@
 
 视频聚合站的 Go 后端。提供三件事：
 
-1. 多家网盘统一抽象（夸克 / 115 / PikPak / 联通沃盘 / OneDrive / 本地存储）
+1. 多家网盘统一抽象（夸克 / 115 / PikPak / 联通沃盘 / OneDrive / Google Drive / 本地存储）
 2. 视频元数据目录（SQLite）+ 扫描 + teaser 预生成
 3. REST API（前台）+ 管理后台 + 直链代理
 4. 标签池、视频隐藏、按网盘统计和详情页来源网盘类型展示能力
@@ -21,6 +21,7 @@ internal/
     pikpak/                 PikPak（自己实现，参考 OpenList pikpak）
     wopan/                  联通沃盘（壳子 + OpenListTeam/wopan-sdk-go）
     onedrive/               OneDrive（OpenList 在线续期 + Microsoft Graph 文件接口）
+    googledrive/            Google Drive（OpenList 在线续期 + Google Drive API；播放走后端代理）
     localstorage/           本地目录扫描（服务器已有视频目录）
   scanner/                  扫目录 → 落库
   preview/                  ffmpeg 抽封面和生成多段 teaser
@@ -109,6 +110,7 @@ go run ./cmd/server 后端 9192
 | pikpak | `username`、`password`（token、验证码和设备 ID 由服务端自动处理并保存） |
 | wopan  | `access_token`、`refresh_token`，可选 `family_id`              |
 | onedrive | `refresh_token` |
+| googledrive | `refresh_token` |
 | localstorage | `path`（服务器上的已有视频目录，如 `/mnt/videos`） |
 
 ### PikPak 速度说明
@@ -118,6 +120,8 @@ go run ./cmd/server 后端 9192
 当前服务器同时存在 sing-box TUN 透明代理，PikPak 默认出站会被 `tun0` 接管；但强制直连物理网卡并没有更快，慢速的主要差异来自 PikPak 取链方式。media/cache CDN 节点仍有波动，偶尔可能遇到慢节点；如果播放变慢，可重新获取直链或重新挂载 PikPak 后再测。
 
 OneDrive 按 OpenList 默认应用方式调用 `https://api.oplist.org/onedrive/renewapi` 在线刷新 token，不需要配置 Azure 应用的 `client_id` / `client_secret` / `redirect_uri`。后台新建 OneDrive 时只需要填 OpenList 代刷得到的 `refresh_token`；服务端会默认挂载根目录并自动回写新 token。
+
+Google Drive 按 OpenList 在线 API 调用 `https://api.oplist.org/googleui/renewapi` 刷新 token。后台新建 Google Drive 时只需要填 OpenList Google Drive 获取到的 `refresh_token`。Google Drive 下载地址必须携带 `Authorization` 头，浏览器不能直接 302 使用，所以本站会由后端代理 `/p/stream` 播放，不加入零带宽 302 白名单。
 
 ## 文件名约定
 
