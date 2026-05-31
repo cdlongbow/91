@@ -79,6 +79,7 @@ export function DrivesPage() {
   const [regenFailedThumbId, setRegenFailedThumbId] = useState("");
   // togglingTeaserId 在请求未返回前禁用按钮，避免连点导致两次切换互相覆盖。
   const [togglingTeaserId, setTogglingTeaserId] = useState("");
+  const [scanningAll, setScanningAll] = useState(false);
   const [selectedDriveId, setSelectedDriveId] = useState<string | null>(null);
   const { show } = useToast();
 
@@ -237,11 +238,14 @@ export function DrivesPage() {
    * 如果当前已有流水线在跑，后端最多保留一个待触发请求，当前轮结束后再跑一轮。
    */
   async function handleRunNightly() {
+    setScanningAll(true);
     try {
       await api.runNightlyJob();
       show("已触发扫描所有网盘，耗时较长，可在 backend 日志观察进度", "success");
     } catch (e) {
       show(e instanceof Error ? e.message : "触发失败", "error");
+    } finally {
+      setScanningAll(false);
     }
   }
 
@@ -588,9 +592,10 @@ export function DrivesPage() {
             type="button"
             className="admin-btn"
             onClick={handleRunNightly}
+            disabled={scanningAll}
             title="立即扫描所有网盘。耗时较长，期间不要重复触发。"
           >
-            <PlayCircle size={14} /> 扫描所有网盘
+            <PlayCircle size={14} /> {scanningAll ? "扫描中…" : "扫描所有网盘"}
           </button>
           <button className="admin-btn is-primary" onClick={openCreate}>
             <Plus size={14} /> 新建网盘

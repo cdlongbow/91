@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -18,13 +19,25 @@ const ToastCtx = createContext<Ctx | null>(null);
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<Toast[]>([]);
+  const timers = useRef<Record<string, ReturnType<typeof window.setTimeout>>>({});
 
+  // Deduplicate: same text won't stack, just resets the dismiss timer
   const show = useCallback((text: string, kind: ToastKind = "info") => {
+    // Reset timer if duplicate
+    if (timers.current[text]) {
+      window.clearTimeout(timers.current[text]);
+      timers.current[text] = window.setTimeout(() => {
+        setItems((list) => list.filter((t) => t.text !== text));
+        delete timers.current[text];
+      }, 2600);
+      return;
+    }
     const id = Date.now() + Math.random();
-    setItems((list) => [...list, { id, kind, text }]);
-    window.setTimeout(() => {
+    timers.current[text] = window.setTimeout(() => {
       setItems((list) => list.filter((t) => t.id !== id));
+      delete timers.current[text];
     }, 2600);
+    setItems((list) => [...list, { id, kind, text }]);
   }, []);
 
   return (
