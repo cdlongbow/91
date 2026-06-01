@@ -398,6 +398,84 @@ VALUES
 	}
 }
 
+func TestMigrateDoesNotRewriteAlreadySyncedVideoTags(t *testing.T) {
+	ctx := context.Background()
+	cat, err := Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	now := time.Now()
+	for _, id := range []string{"video-1", "video-2", "video-3"} {
+		if err := cat.UpsertVideo(ctx, &Video{
+			ID:          id,
+			DriveID:     "drive",
+			FileID:      id,
+			Title:       "巨乳后入合集",
+			Category:    "Better Call Saul S03",
+			PublishedAt: now,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	if err := cat.migrate(ctx); err != nil {
+		t.Fatalf("first migrate: %v", err)
+	}
+
+	before := videoUpdatedAtByID(t, ctx, cat, "video-1", "video-2", "video-3")
+	time.Sleep(5 * time.Millisecond)
+	if err := cat.migrate(ctx); err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	after := videoUpdatedAtByID(t, ctx, cat, "video-1", "video-2", "video-3")
+	for id, want := range before {
+		if got := after[id]; got != want {
+			t.Fatalf("%s updated_at changed on no-op migrate: got %d, want %d", id, got, want)
+		}
+	}
+}
+
+func TestMigrateBackfillsLegacyTagsWithoutRelations(t *testing.T) {
+	ctx := context.Background()
+	cat, err := Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	now := time.Now().UnixMilli()
+	if _, err := cat.db.ExecContext(ctx, `
+INSERT INTO videos (id, drive_id, file_id, title, tags, tags_manual, published_at, created_at, updated_at)
+VALUES ('legacy-video', 'drive', 'file-legacy', 'legacy title', '["legacy-tag"]', 0, ?, ?, ?)`,
+		now, now, now); err != nil {
+		t.Fatalf("seed legacy video: %v", err)
+	}
+	if err := cat.migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	tag := mustTagByLabel(t, ctx, cat, "legacy-tag")
+	var count int
+	if err := cat.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM video_tags WHERE video_id = 'legacy-video' AND tag_id = ?`, tag.ID).Scan(&count); err != nil {
+		t.Fatalf("count video tag: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("legacy video tag relation count = %d, want 1", count)
+	}
+}
+
 func TestOpenMigratesLegacyVideosWithoutFileName(t *testing.T) {
 	path := t.TempDir() + "/catalog.db"
 	db, err := sql.Open("sqlite", path)
@@ -942,6 +1020,19 @@ func mustTagByLabel(t *testing.T, ctx context.Context, cat *Catalog, label strin
 	}
 	t.Fatalf("tag %q not found", label)
 	return Tag{}
+}
+
+func videoUpdatedAtByID(t *testing.T, ctx context.Context, cat *Catalog, ids ...string) map[string]int64 {
+	t.Helper()
+	out := make(map[string]int64, len(ids))
+	for _, id := range ids {
+		var updatedAt int64
+		if err := cat.db.QueryRowContext(ctx, `SELECT updated_at FROM videos WHERE id = ?`, id).Scan(&updatedAt); err != nil {
+			t.Fatalf("read updated_at for %s: %v", id, err)
+		}
+		out[id] = updatedAt
+	}
+	return out
 }
 
 // 删除 collection 标签的最后一个引用视频后，标签应当自动从 tags 表里消失。
