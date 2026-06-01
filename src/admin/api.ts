@@ -93,6 +93,8 @@ export type AdminDrive = {
   skipDirIds: string[];
   // spider91 上次成功爬取时间（unix 秒）；其它 kind 留空。
   lastCrawlAt?: number;
+  // spider91 专用代理地址；仅后台管理接口返回，用于编辑表单回显。
+  spider91Proxy?: string;
   thumbnailGenerationStatus?: DriveGenerationStatus;
   previewGenerationStatus?: DriveGenerationStatus;
   fingerprintGenerationStatus?: DriveGenerationStatus;

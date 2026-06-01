@@ -439,6 +439,190 @@ func TestHandleUpsertDriveReplacesExistingCredentialsWhenProvided(t *testing.T) 
 	}
 }
 
+func TestHandleUpsertSpider91ProxyPreservesRuntimeCredentials(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	if err := cat.UpsertDrive(ctx, &catalog.Drive{
+		ID:     "spider91-main",
+		Kind:   "spider91",
+		Name:   "91 Spider",
+		RootID: "/",
+		Credentials: map[string]string{
+			"last_crawl_at": "1800000000",
+			"proxy":         "http://old-proxy.local:7890",
+			"script_path":   "/opt/video-site-91/91VideoSpider/spider_91porn.py",
+		},
+		Status: "ok",
+	}); err != nil {
+		t.Fatalf("seed drive: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", strings.NewReader(`{
+		"id": "spider91-main",
+		"kind": "spider91",
+		"name": "91 Spider",
+		"rootId": "/",
+		"credentials": {"proxy": " socks5h://proxy-user:proxy-pass@127.0.0.1:7891 "}
+	}`))
+	rr := httptest.NewRecorder()
+	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	got, err := cat.GetDrive(ctx, "spider91-main")
+	if err != nil {
+		t.Fatalf("get drive: %v", err)
+	}
+	if got.Credentials["proxy"] != "socks5h://proxy-user:proxy-pass@127.0.0.1:7891" {
+		t.Fatalf("proxy = %q, want trimmed new proxy", got.Credentials["proxy"])
+	}
+	if got.Credentials["last_crawl_at"] != "1800000000" {
+		t.Fatalf("last_crawl_at = %q, want preserved", got.Credentials["last_crawl_at"])
+	}
+	if got.Credentials["script_path"] == "" {
+		t.Fatalf("script_path should be preserved")
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/admin/api/drives", strings.NewReader(`{
+		"id": "spider91-main",
+		"kind": "spider91",
+		"name": "91 Spider",
+		"rootId": "/",
+		"credentials": {"proxy": " "}
+	}`))
+	rr = httptest.NewRecorder()
+	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	got, err = cat.GetDrive(ctx, "spider91-main")
+	if err != nil {
+		t.Fatalf("get cleared drive: %v", err)
+	}
+	if _, ok := got.Credentials["proxy"]; ok {
+		t.Fatalf("proxy should be removed after empty save, got %q", got.Credentials["proxy"])
+	}
+	if got.Credentials["last_crawl_at"] != "1800000000" {
+		t.Fatalf("last_crawl_at after clear = %q, want preserved", got.Credentials["last_crawl_at"])
+	}
+}
+
+func TestHandleUpsertSpider91RejectsUnsupportedProxyScheme(t *testing.T) {
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/drives", strings.NewReader(`{
+		"id": "spider91-main",
+		"kind": "spider91",
+		"name": "91 Spider",
+		"rootId": "/",
+		"credentials": {"proxy": "ftp://127.0.0.1:21"}
+	}`))
+	rr := httptest.NewRecorder()
+	(&AdminServer{Catalog: cat}).handleUpsertDrive(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "socks5:// 或 socks5h://") {
+		t.Fatalf("body = %q, want supported schemes message", rr.Body.String())
+	}
+}
+
+func TestHandleListDrivesIncludesSpider91Proxy(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	for _, d := range []*catalog.Drive{
+		{
+			ID:     "spider91-main",
+			Kind:   "spider91",
+			Name:   "91 Spider",
+			RootID: "/",
+			Credentials: map[string]string{
+				"last_crawl_at": "1800000000",
+				"proxy":         " http://127.0.0.1:7890 ",
+			},
+			Status: "ok",
+		},
+		{
+			ID:     "onedrive-main",
+			Kind:   "onedrive",
+			Name:   "OneDrive",
+			RootID: "root",
+			Credentials: map[string]string{
+				"proxy": "http://should-not-leak.local:7890",
+			},
+			Status: "ok",
+		},
+	} {
+		if err := cat.UpsertDrive(ctx, d); err != nil {
+			t.Fatalf("seed drive %s: %v", d.ID, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/drives", nil)
+	rr := httptest.NewRecorder()
+	(&AdminServer{Catalog: cat}).handleListDrives(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	var got []struct {
+		ID            string `json:"id"`
+		Spider91Proxy string `json:"spider91Proxy"`
+		LastCrawlAt   int64  `json:"lastCrawlAt"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byID := map[string]struct {
+		Spider91Proxy string
+		LastCrawlAt   int64
+	}{}
+	for _, d := range got {
+		byID[d.ID] = struct {
+			Spider91Proxy string
+			LastCrawlAt   int64
+		}{Spider91Proxy: d.Spider91Proxy, LastCrawlAt: d.LastCrawlAt}
+	}
+	if byID["spider91-main"].Spider91Proxy != "http://127.0.0.1:7890" {
+		t.Fatalf("spider91 proxy = %q, want trimmed proxy", byID["spider91-main"].Spider91Proxy)
+	}
+	if byID["spider91-main"].LastCrawlAt != 1800000000 {
+		t.Fatalf("lastCrawlAt = %d, want 1800000000", byID["spider91-main"].LastCrawlAt)
+	}
+	if byID["onedrive-main"].Spider91Proxy != "" {
+		t.Fatalf("onedrive spider91Proxy = %q, want empty", byID["onedrive-main"].Spider91Proxy)
+	}
+}
+
 func TestHandleListDrivesIncludesTeaserCounts(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")

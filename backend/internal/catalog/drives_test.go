@@ -61,6 +61,7 @@ func TestUpsertDriveDefaultsRootIDByKind(t *testing.T) {
 		{id: "onedrive", kind: "onedrive", want: "root"},
 		{id: "googledrive", kind: "googledrive", want: "root"},
 		{id: "localstorage", kind: "localstorage", want: "/"},
+		{id: "spider91", kind: "spider91", want: "/"},
 	}
 	for _, tc := range cases {
 		if err := cat.UpsertDrive(ctx, &Drive{
@@ -79,6 +80,47 @@ func TestUpsertDriveDefaultsRootIDByKind(t *testing.T) {
 		}
 		if got.ScanRootID != tc.want {
 			t.Fatalf("%s scanRootId = %q, want %q", tc.kind, got.ScanRootID, tc.want)
+		}
+	}
+}
+
+func TestUpsertDriveIgnoresRootIDForLocalStorageAndSpider91(t *testing.T) {
+	ctx := context.Background()
+	cat, err := Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		id   string
+		kind string
+	}{
+		{id: "localstorage", kind: "localstorage"},
+		{id: "spider91", kind: "spider91"},
+	} {
+		if err := cat.UpsertDrive(ctx, &Drive{
+			ID:         tc.id,
+			Kind:       tc.kind,
+			Name:       tc.kind,
+			RootID:     "manual-root",
+			ScanRootID: "manual-scan-root",
+		}); err != nil {
+			t.Fatalf("upsert %s: %v", tc.kind, err)
+		}
+		got, err := cat.GetDrive(ctx, tc.id)
+		if err != nil {
+			t.Fatalf("get %s: %v", tc.kind, err)
+		}
+		if got.RootID != "/" {
+			t.Fatalf("%s rootId = %q, want /", tc.kind, got.RootID)
+		}
+		if got.ScanRootID != "/" {
+			t.Fatalf("%s scanRootId = %q, want /", tc.kind, got.ScanRootID)
 		}
 	}
 }

@@ -3,6 +3,8 @@ package spider91
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -230,6 +232,108 @@ func TestCrawlerRunOnceMissingScript(t *testing.T) {
 
 	if _, err := c.RunOnce(context.Background(), 1); err == nil {
 		t.Fatalf("expected error for missing script")
+	}
+}
+
+func TestCrawlerPassesProxyToSpiderProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-based fake script only on unix")
+	}
+
+	tmp := t.TempDir()
+	scriptPath := filepath.Join(tmp, "print_proxy_env.sh")
+	script := `#!/bin/sh
+printf 'HTTP_PROXY=%s\n' "$HTTP_PROXY"
+printf 'HTTPS_PROXY=%s\n' "$HTTPS_PROXY"
+printf 'http_proxy=%s\n' "$http_proxy"
+printf 'https_proxy=%s\n' "$https_proxy"
+printf 'NO_PROXY=%s\n' "$NO_PROXY"
+printf 'no_proxy=%s\n' "$no_proxy"
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	proxyURL := "socks5h://proxy.local:1080"
+	drv := New(Config{ID: "proxy-drive", RootDir: filepath.Join(tmp, "proxy-drive")})
+	c := NewCrawler(CrawlerConfig{
+		Driver:     drv,
+		PythonPath: "sh",
+		ScriptPath: scriptPath,
+		ProxyURL:   proxyURL,
+	})
+	cmd, stdout, err := c.startSpiderTargetNew(
+		context.Background(),
+		1,
+		filepath.Join(tmp, "seen.txt"),
+		filepath.Join(tmp, "out.json"),
+	)
+	if err != nil {
+		t.Fatalf("startSpiderTargetNew: %v", err)
+	}
+	raw, err := io.ReadAll(stdout)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+
+	want := strings.Join([]string{
+		"HTTP_PROXY=" + proxyURL,
+		"HTTPS_PROXY=" + proxyURL,
+		"http_proxy=" + proxyURL,
+		"https_proxy=" + proxyURL,
+		"NO_PROXY=",
+		"no_proxy=",
+	}, "\n") + "\n"
+	if string(raw) != want {
+		t.Fatalf("proxy env = %q, want %q", string(raw), want)
+	}
+}
+
+func TestConfigureExplicitProxySupportsSocksSchemes(t *testing.T) {
+	for _, raw := range []string{
+		"socks5://127.0.0.1:1080",
+		"socks5h://proxy-user:proxy-pass@127.0.0.1:1080",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+			if err := configureExplicitProxy(transport, raw); err != nil {
+				t.Fatalf("configureExplicitProxy: %v", err)
+			}
+			if transport.Proxy != nil {
+				t.Fatalf("Transport.Proxy should be nil for SOCKS proxy")
+			}
+			if transport.DialContext == nil {
+				t.Fatalf("Transport.DialContext should be set for SOCKS proxy")
+			}
+		})
+	}
+
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+	if err := configureExplicitProxy(transport, "http://127.0.0.1:7890"); err != nil {
+		t.Fatalf("configureExplicitProxy http: %v", err)
+	}
+	if transport.Proxy == nil {
+		t.Fatalf("Transport.Proxy should be set for HTTP proxy")
+	}
+	if transport.DialContext != nil {
+		t.Fatalf("Transport.DialContext should not be set for HTTP proxy")
+	}
+
+	if err := configureExplicitProxy(&http.Transport{}, "ftp://127.0.0.1:21"); err == nil {
+		t.Fatalf("expected unsupported proxy scheme error")
+	}
+}
+
+func TestSelectSocksTargetIPPrefersIPv4(t *testing.T) {
+	got := selectSocksTargetIP([]net.IPAddr{
+		{IP: net.ParseIP("2606:4700:20::681a:229")},
+		{IP: net.ParseIP("104.26.3.41")},
+	})
+	if got == nil || got.String() != "104.26.3.41" {
+		t.Fatalf("selectSocksTargetIP = %v, want IPv4 104.26.3.41", got)
 	}
 }
 

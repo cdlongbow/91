@@ -68,6 +68,7 @@ import time
 import random
 import json
 import os
+import socket
 import sys
 import html
 from urllib.parse import urljoin, unquote, urlparse
@@ -79,6 +80,28 @@ except ImportError:
     print("错误: 缺少依赖库 beautifulsoup4")
     print("请运行: pip install beautifulsoup4 lxml")
     sys.exit(1)
+
+
+def prefer_ipv4_for_plain_socks5_proxy():
+    """PySocks may pick IPv6 first for socks5://; some SOCKS5 servers only accept IPv4."""
+    proxy_envs = (
+        os.environ.get("HTTPS_PROXY", ""),
+        os.environ.get("HTTP_PROXY", ""),
+        os.environ.get("https_proxy", ""),
+        os.environ.get("http_proxy", ""),
+    )
+    uses_plain_socks5 = any(v.strip().lower().startswith("socks5://") for v in proxy_envs)
+    if not uses_plain_socks5 or getattr(socket, "_spider91_ipv4_first", False):
+        return
+
+    original_getaddrinfo = socket.getaddrinfo
+
+    def getaddrinfo_ipv4_first(*args, **kwargs):
+        infos = original_getaddrinfo(*args, **kwargs)
+        return sorted(infos, key=lambda info: 0 if info[0] == socket.AF_INET else 1)
+
+    socket.getaddrinfo = getaddrinfo_ipv4_first
+    socket._spider91_ipv4_first = True
 
 # ===================== 配置区域 =====================
 BASE_URL = "https://www.91porn.com/v.php"
@@ -757,13 +780,15 @@ def main():
                              "日志改走 stderr。配合 backend 边读边下载使用。")
 
     args, _ = parser.parse_known_args()
+    cli_out = sys.stderr if args.stream_output else sys.stdout
+    prefer_ipv4_for_plain_socks5_proxy()
 
     print("""
 ================================================
     91porn 视频爬虫启动中...
 ================================================
 按 Ctrl+C 可随时中断并保存进度
-""")
+""", file=cli_out)
 
     # 加载已知 ID（来自 backend 的 catalog 已入库列表；兼容旧参数名）
     seen_viewkeys = []
@@ -775,9 +800,9 @@ def main():
                     if line:
                         seen_viewkeys.append(line)
         except FileNotFoundError:
-            print(f"警告: --seen-viewkeys-file 不存在: {args.seen_viewkeys_file}")
+            print(f"警告: --seen-viewkeys-file 不存在: {args.seen_viewkeys_file}", file=cli_out)
         except Exception as e:
-            print(f"警告: 读取 --seen-viewkeys-file 失败: {e}")
+            print(f"警告: 读取 --seen-viewkeys-file 失败: {e}", file=cli_out)
 
     # 决定运行模式
     if args.target_new is not None:

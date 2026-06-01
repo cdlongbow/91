@@ -169,7 +169,7 @@ export function DrivesPage() {
       kind: d.kind,
       name: d.name,
       rootId: d.rootId,
-      creds: {},
+      creds: d.kind === "spider91" ? { proxy: d.spider91Proxy ?? "" } : {},
       spider91UploadDriveId: settings?.spider91UploadDriveId ?? "",
     });
     setModalOpen(true);
@@ -185,7 +185,9 @@ export function DrivesPage() {
     const driveID = existing
       ? form.id
       : makeUniqueDriveId(form.kind, name, list);
-    const rootId = form.rootId.trim() || defaultRootId(form.kind);
+    const rootId = usesRootDirectoryID(form.kind)
+      ? form.rootId.trim() || defaultRootId(form.kind)
+      : defaultRootId(form.kind);
     // 若编辑且没有提供凭证，提示一下但仍允许保存（不改凭证）
     setSaving(true);
     try {
@@ -408,7 +410,7 @@ export function DrivesPage() {
                   <span className="admin-detail-label">网盘 ID</span>
                   <span className="admin-detail-value admin-mono-cell">{d.id}</span>
                 </div>
-                {d.kind !== "spider91" && (
+                {usesRootDirectoryID(d.kind) && (
                   <>
                     <div className="admin-detail-row">
                       <span className="admin-detail-label">根目录 ID</span>
@@ -974,17 +976,19 @@ function DriveForm({
           <option value="wopan">联通沃盘</option>
         </select>
       </div>
-      <div className="admin-form__row">
-        <label>根目录 ID</label>
-        <input
-          value={form.rootId}
-          onChange={(e) => set("rootId", e.target.value)}
-          placeholder={rootIdPlaceholder(form.kind)}
-        />
-        <div className="admin-form__help">
-          留空时使用该网盘类型的默认根目录，具体目录ID获取方式请参考OpenList文档
+      {usesRootDirectoryID(form.kind) && (
+        <div className="admin-form__row">
+          <label>根目录 ID</label>
+          <input
+            value={form.rootId}
+            onChange={(e) => set("rootId", e.target.value)}
+            placeholder={rootIdPlaceholder(form.kind)}
+          />
+          <div className="admin-form__help">
+            留空时使用该网盘类型的默认根目录，具体目录ID获取方式请参考OpenList文档
+          </div>
         </div>
-      </div>
+      )}
 
       {(help || fields.length > 0) && (
         <>
@@ -1087,7 +1091,7 @@ function credentialHelp(kind: Kind, isEdit: boolean): string {
     case "localstorage":
       return `把服务器上的一个已有目录作为视频来源扫描。填写绝对路径，例如 /mnt/videos；系统会读取该目录及子目录中的视频，并生成封面、Teaser 和指纹。${note}`;
     case "spider91":
-      return "91 爬虫会把定时抓取到的视频和封面先保存到本机，并作为一个视频来源接入站点；它不是外部网盘，不需要填写 Cookie 或目录 ID。后续流水线会把较早的视频上传到你选择的 115 / PikPak / OneDrive 目标盘。";
+      return "91 爬虫会把定时抓取到的视频和封面先保存到本机，并作为一个视频来源接入站点；可按服务器网络情况单独配置代理。后续流水线会把较早的视频上传到你选择的 115 / PikPak / OneDrive 目标盘。";
     default:
       return "";
   }
@@ -1188,7 +1192,14 @@ function credentialFields(kind: Kind): Array<{
         },
       ];
     case "spider91":
-      return [];
+      return [
+        {
+          key: "proxy",
+          label: "代理地址（可选）",
+          placeholder: "http://127.0.0.1:7890",
+          help: "仅用于 91Spider 的列表/详情请求和视频、封面下载；留空则使用服务器环境变量 HTTP_PROXY / HTTPS_PROXY 或直连。支持 http://、https://、socks5:// 或 socks5h://。",
+        },
+      ];
   }
 }
 
@@ -1199,6 +1210,10 @@ function defaultRootId(kind: Kind): string {
   if (kind === "localstorage") return "/";
   if (kind === "spider91") return "/";
   return "0";
+}
+
+function usesRootDirectoryID(kind: Kind): boolean {
+  return kind !== "localstorage" && kind !== "spider91";
 }
 
 function rootIdPlaceholder(kind: Kind): string {

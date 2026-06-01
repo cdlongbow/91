@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/video-site/backend/internal/catalog"
+	"golang.org/x/net/proxy"
 )
 
 // 默认 author/tag 标签，便于在前端筛选 spider91 来源的视频。
@@ -79,27 +81,121 @@ func NewCrawler(cfg CrawlerConfig) *Crawler {
 		cfg.DownloadTimeout = 30 * time.Minute
 	}
 	if cfg.HTTPClient == nil {
-		// 选 proxy 函数：显式 ProxyURL > 环境变量 > 直连
-		proxyFn := http.ProxyFromEnvironment
-		if strings.TrimSpace(cfg.ProxyURL) != "" {
-			if u, err := url.Parse(cfg.ProxyURL); err == nil {
-				proxyFn = http.ProxyURL(u)
-			} else {
-				log.Printf("[spider91] invalid proxy URL %q, falling back to env: %v", cfg.ProxyURL, err)
-			}
+		transport := &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			ResponseHeaderTimeout: 60 * time.Second,
+			MaxIdleConns:          10,
+			IdleConnTimeout:       90 * time.Second,
+		}
+		if err := configureExplicitProxy(transport, cfg.ProxyURL); err != nil {
+			log.Printf("[spider91] invalid configured proxy URL, falling back to env: %v", err)
 		}
 		cfg.HTTPClient = &http.Client{
 			// 不限制总下载时长，靠 ctx 控制；只挡 dial / handshake / header
-			Timeout: 0,
-			Transport: &http.Transport{
-				Proxy:                 proxyFn,
-				ResponseHeaderTimeout: 60 * time.Second,
-				MaxIdleConns:          10,
-				IdleConnTimeout:       90 * time.Second,
-			},
+			Timeout:   0,
+			Transport: transport,
 		}
 	}
 	return &Crawler{cfg: cfg}
+}
+
+func configureExplicitProxy(transport *http.Transport, raw string) error {
+	proxyURL := strings.TrimSpace(raw)
+	if proxyURL == "" {
+		return nil
+	}
+	u, err := url.Parse(proxyURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("invalid proxy URL")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		transport.Proxy = http.ProxyURL(u)
+		transport.DialContext = nil
+		return nil
+	case "socks5", "socks5h":
+		dialContext, err := socksProxyDialContext(u)
+		if err != nil {
+			return err
+		}
+		transport.Proxy = nil
+		transport.DialContext = dialContext
+		return nil
+	default:
+		return fmt.Errorf("unsupported proxy scheme %q", u.Scheme)
+	}
+}
+
+func socksProxyDialContext(proxyURL *url.URL) (func(context.Context, string, string) (net.Conn, error), error) {
+	var auth *proxy.Auth
+	if proxyURL.User != nil {
+		username := proxyURL.User.Username()
+		password, _ := proxyURL.User.Password()
+		auth = &proxy.Auth{User: username, Password: password}
+	}
+	dialer, err := proxy.SOCKS5("tcp", proxyURL.Host, auth, &net.Dialer{Timeout: 60 * time.Second})
+	if err != nil {
+		return nil, err
+	}
+	remoteDNS := strings.EqualFold(proxyURL.Scheme, "socks5h")
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		target := addr
+		if !remoteDNS {
+			resolved, err := resolveSocksTarget(ctx, addr)
+			if err != nil {
+				return nil, err
+			}
+			target = resolved
+		}
+		if ctxDialer, ok := dialer.(proxy.ContextDialer); ok {
+			return ctxDialer.DialContext(ctx, network, target)
+		}
+		type result struct {
+			conn net.Conn
+			err  error
+		}
+		ch := make(chan result, 1)
+		go func() {
+			conn, err := dialer.Dial(network, target)
+			ch <- result{conn: conn, err: err}
+		}()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case res := <-ch:
+			return res.conn, res.err
+		}
+	}, nil
+}
+
+func resolveSocksTarget(ctx context.Context, addr string) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || net.ParseIP(host) != nil {
+		return addr, nil
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return "", err
+	}
+	ip := selectSocksTargetIP(ips)
+	if ip == nil {
+		return "", fmt.Errorf("resolve %s: no address", host)
+	}
+	return net.JoinHostPort(ip.String(), port), nil
+}
+
+func selectSocksTargetIP(ips []net.IPAddr) net.IP {
+	for _, addr := range ips {
+		if ip4 := addr.IP.To4(); ip4 != nil {
+			return ip4
+		}
+	}
+	for _, addr := range ips {
+		if addr.IP != nil {
+			return addr.IP
+		}
+	}
+	return nil
 }
 
 // CrawlResult 汇总一次 RunOnce 的结果。
@@ -323,6 +419,16 @@ func (c *Crawler) startSpiderTargetNew(ctx context.Context, targetNew int, seenP
 	cmd := exec.CommandContext(ctx, c.cfg.PythonPath, args...)
 	if c.cfg.WorkDir != "" {
 		cmd.Dir = c.cfg.WorkDir
+	}
+	if proxyURL := strings.TrimSpace(c.cfg.ProxyURL); proxyURL != "" {
+		cmd.Env = append(os.Environ(),
+			"HTTP_PROXY="+proxyURL,
+			"HTTPS_PROXY="+proxyURL,
+			"http_proxy="+proxyURL,
+			"https_proxy="+proxyURL,
+			"NO_PROXY=",
+			"no_proxy=",
+		)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

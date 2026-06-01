@@ -8,6 +8,9 @@ const drivesPageSource = readFileSync(
 );
 
 test("spider91 drive form does not expose advanced crawler credentials", () => {
+  assert.match(drivesPageSource, /key: "proxy"/);
+  assert.match(drivesPageSource, /label: "代理地址（可选）"/);
+  assert.match(drivesPageSource, /支持 http:\/\/、https:\/\/、socks5:\/\/ 或 socks5h:\/\//);
   assert.doesNotMatch(drivesPageSource, /target_new/);
   assert.doesNotMatch(drivesPageSource, /crawl_hour/);
   assert.doesNotMatch(drivesPageSource, /python_path/);
@@ -24,8 +27,14 @@ test("spider91 upload target uses explicit local-save option instead of auto tar
   assert.doesNotMatch(drivesPageSource, /自动模式/);
 });
 
-test("drive form shows a root directory id field for all drive kinds", () => {
+test("drive form hides root directory id for localstorage and spider91", () => {
   assert.match(drivesPageSource, /<label>根目录 ID<\/label>/);
+  assert.match(
+    drivesPageSource,
+    /function usesRootDirectoryID\(kind: Kind\): boolean \{\s*return kind !== "localstorage" && kind !== "spider91";\s*\}/
+  );
+  assert.match(drivesPageSource, /\{usesRootDirectoryID\(form\.kind\) && \(/);
+  assert.match(drivesPageSource, /\{usesRootDirectoryID\(d\.kind\) && \(/);
   assert.match(drivesPageSource, /placeholder=\{rootIdPlaceholder\(form\.kind\)\}/);
   assert.doesNotMatch(drivesPageSource, /扫描起点目录 ID/);
   assert.doesNotMatch(drivesPageSource, /set\("scanRootId"/);
@@ -94,6 +103,7 @@ test("localstorage drive form asks for a server directory path", () => {
   assert.match(fields, /key: "path"/);
   assert.match(fields, /label: "本地目录路径"/);
   assert.match(drivesPageSource, /if \(kind === "localstorage"\) return "\/"/);
+  assert.match(drivesPageSource, /kind !== "localstorage" && kind !== "spider91"/);
 });
 
 test("drive type selector keeps primary source order", () => {

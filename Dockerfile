@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-bs4 \
     python3-lxml \
     python3-requests \
+    python3-socks \
     tar \
     tzdata \
     && rm -rf /var/lib/apt/lists/*

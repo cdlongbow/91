@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -395,6 +396,7 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 		SkipDirIDs []string `json:"skipDirIds"`
 		// LastCrawlAt 是 spider91 上次成功爬取的 unix 秒（来自 credentials.last_crawl_at）。
 		// 其它 kind 留 0；前端用它显示"上次抓取: N 小时前"。
+		Spider91Proxy                 string           `json:"spider91Proxy,omitempty"`
 		LastCrawlAt                   int64            `json:"lastCrawlAt,omitempty"`
 		ThumbnailGenerationStatus     GenerationStatus `json:"thumbnailGenerationStatus"`
 		PreviewGenerationStatus       GenerationStatus `json:"previewGenerationStatus"`
@@ -453,6 +455,7 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 			HasCredential:                 hasCred,
 			TeaserEnabled:                 d.TeaserEnabled,
 			SkipDirIDs:                    append([]string{}, d.SkipDirIDs...),
+			Spider91Proxy:                 spider91ProxyForDrive(d),
 			LastCrawlAt:                   lastCrawlAt,
 			ThumbnailGenerationStatus:     generation.Thumbnail,
 			PreviewGenerationStatus:       generation.Preview,
@@ -505,7 +508,14 @@ func (a *AdminServer) handleUpsertDrive(w http.ResponseWriter, r *http.Request) 
 	if existingDrive, err := a.Catalog.GetDrive(r.Context(), body.ID); err == nil {
 		existing = existingDrive
 	}
-	if len(body.Credentials) == 0 && existing != nil && len(existing.Credentials) > 0 {
+	if body.Kind == "spider91" {
+		credentials, err := mergeSpider91Credentials(existing, body.Credentials)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		body.Credentials = credentials
+	} else if len(body.Credentials) == 0 && existing != nil && len(existing.Credentials) > 0 {
 		body.Credentials = existing.Credentials
 	}
 
@@ -552,6 +562,58 @@ func (a *AdminServer) handleUpsertDrive(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func spider91ProxyForDrive(d *catalog.Drive) string {
+	if d == nil || d.Kind != "spider91" || d.Credentials == nil {
+		return ""
+	}
+	return strings.TrimSpace(d.Credentials["proxy"])
+}
+
+func mergeSpider91Credentials(existing *catalog.Drive, incoming map[string]string) (map[string]string, error) {
+	merged := map[string]string{}
+	if existing != nil {
+		for k, v := range existing.Credentials {
+			merged[k] = v
+		}
+	}
+	for k, v := range incoming {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		if k == "proxy" {
+			proxy, err := normalizeSpider91ProxyURL(v)
+			if err != nil {
+				return nil, err
+			}
+			if proxy == "" {
+				delete(merged, "proxy")
+			} else {
+				merged["proxy"] = proxy
+			}
+			continue
+		}
+		merged[k] = v
+	}
+	return merged, nil
+}
+
+func normalizeSpider91ProxyURL(raw string) (string, error) {
+	proxy := strings.TrimSpace(raw)
+	if proxy == "" {
+		return "", nil
+	}
+	u, err := url.Parse(proxy)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("91Spider 代理地址格式无效，请填写类似 http://127.0.0.1:7890 的地址")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "socks5", "socks5h":
+		return proxy, nil
+	default:
+		return "", fmt.Errorf("91Spider 代理地址仅支持 http://、https://、socks5:// 或 socks5h://")
+	}
 }
 
 func (a *AdminServer) handleDeleteDrive(w http.ResponseWriter, r *http.Request) {
