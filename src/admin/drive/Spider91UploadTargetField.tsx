@@ -25,7 +25,7 @@ export function Spider91UploadTargetField({
         ))}
       </select>
       <div className="admin-form__help">
-        选择本地保存时，爬取视频只保存在服务器本地；选择 115 网盘、PikPak 或 OneDrive 后，较早的视频会上传到该云盘根目录下的 91 Spider 文件夹。该设置全局生效。
+        选择本地保存时，爬取视频只保存在服务器本地；选择 115 网盘、123 云盘、PikPak 或 OneDrive 后，较早的视频会上传到该云盘根目录下的 91 Spider 文件夹。该设置全局生效。
       </div>
     </div>
   );

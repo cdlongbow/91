@@ -14,6 +14,7 @@ import (
 
 	"github.com/video-site/backend/internal/catalog"
 	"github.com/video-site/backend/internal/drives"
+	"github.com/video-site/backend/internal/drives/p123"
 	"github.com/video-site/backend/internal/drives/pikpak"
 	"github.com/video-site/backend/internal/drives/spider91"
 )
@@ -133,6 +134,19 @@ func (d *fakeP115) Kind() string { return "p115" }
 
 var _ drives.Drive = (*fakeP115)(nil)
 var _ uploadTarget = (*fakeP115)(nil)
+
+type fakeP123 struct {
+	*fakePikPak
+}
+
+func newFakeP123(id, rootID string) *fakeP123 {
+	return &fakeP123{fakePikPak: newFakePikPak(id, rootID)}
+}
+
+func (d *fakeP123) Kind() string { return "p123" }
+
+var _ drives.Drive = (*fakeP123)(nil)
+var _ uploadTarget = (*fakeP123)(nil)
 
 type fakeOneDrive struct {
 	*fakePikPak
@@ -946,6 +960,66 @@ func TestRunOnceMigratesToP115Target(t *testing.T) {
 	}
 }
 
+func TestRunOnceMigratesToP123Target(t *testing.T) {
+	cat := setupCatalog(t)
+	src, _ := setupSpider91(t)
+	target := newFakeP123("p123-target", "p123-root-id")
+	reg := newFakeRegistry()
+	reg.Add(src)
+	reg.Add(target)
+
+	now := time.Now()
+	id := writeSpider91Video(t, cat, src, "vk-123-001", ".mp4", []byte("video bytes 123"), now)
+
+	m := New(Config{
+		Catalog:          cat,
+		Registry:         reg,
+		GetTargetDriveID: func() string { return target.ID() },
+		KeepLatestN:      -1,
+	})
+	m.runOnce(context.Background())
+
+	if target.uploadCalls != 1 {
+		t.Fatalf("p123 upload calls = %d, want 1", target.uploadCalls)
+	}
+
+	got, err := cat.GetVideo(context.Background(), id)
+	if err != nil {
+		t.Fatalf("get video: %v", err)
+	}
+	if got.DriveID != target.ID() {
+		t.Fatalf("drive_id = %q, want %q", got.DriveID, target.ID())
+	}
+	wantName := "Sample vk-123-001-001.mp4"
+	if _, ok := target.gotBodies[wantName]; !ok {
+		t.Fatalf("p123 did not receive expected upload name %q (got names: %v)", wantName, keysOf(target.gotBodies))
+	}
+	if gotParent := target.gotParents[wantName]; gotParent != "p123-root-id/"+spider91UploadDirName {
+		t.Fatalf("p123 upload parent = %q, want root/91 Spider", gotParent)
+	}
+	if len(target.ensureCalls) != 1 || target.ensureCalls[0] != spider91UploadDirName {
+		t.Fatalf("p123 ensure calls = %#v, want %q", target.ensureCalls, spider91UploadDirName)
+	}
+	if got.FileID != "remote-"+wantName {
+		t.Fatalf("file_id = %q, want %q", got.FileID, "remote-"+wantName)
+	}
+	if got.FileName != wantName {
+		t.Fatalf("file_name = %q, want %q", got.FileName, wantName)
+	}
+	if got.ContentHash == "" {
+		t.Fatal("content_hash should be set after p123 migration")
+	}
+
+	videoPath, _ := src.VideoPath("vk-123-001.mp4")
+	if _, err := os.Stat(videoPath); !os.IsNotExist(err) {
+		t.Fatalf("local mp4 still exists after p123 migration or stat error: %v", err)
+	}
+	thumbPath, _ := src.ThumbPath("vk-123-001.jpg")
+	if _, err := os.Stat(thumbPath); !os.IsNotExist(err) {
+		t.Fatalf("local thumb still exists after p123 migration or stat error: %v", err)
+	}
+}
+
 func TestRunOnceMigratesToOneDriveTarget(t *testing.T) {
 	cat := setupCatalog(t)
 	src, _ := setupSpider91(t)
@@ -1006,7 +1080,22 @@ func TestRunOnceMigratesToOneDriveTarget(t *testing.T) {
 	}
 }
 
-// TestResolveTargetRejectsUnsupportedKind 验证当目标 drive 既不是 PikPak、115 也不是 OneDrive 时，
+func TestAdaptUploadTargetSupportsP123Driver(t *testing.T) {
+	d := p123.New(p123.Config{
+		ID:          "p123-target",
+		RootID:      "root-123",
+		AccessToken: "token-1",
+	})
+	target, err := adaptUploadTarget(d)
+	if err != nil {
+		t.Fatalf("adaptUploadTarget() error = %v", err)
+	}
+	if target.ID() != "p123-target" || target.Kind() != "p123" || target.RootID() != "root-123" {
+		t.Fatalf("target id/kind/root = %q/%q/%q, want p123-target/p123/root-123", target.ID(), target.Kind(), target.RootID())
+	}
+}
+
+// TestResolveTargetRejectsUnsupportedKind 验证当目标 drive 既不是 PikPak、115、123 也不是 OneDrive 时，
 // resolveTarget 拒绝并返回 error，让 runOnce 静默跳过（不会做破坏性变更）。
 func TestResolveTargetRejectsUnsupportedKind(t *testing.T) {
 	cat := setupCatalog(t)

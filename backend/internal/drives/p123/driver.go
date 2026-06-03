@@ -2,7 +2,9 @@ package p123
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -38,9 +41,16 @@ const (
 	endpointFileList     = "/file/list/new"
 	endpointDownloadInfo = "/file/download_info"
 	endpointMkdir        = "/file/upload_request"
+	endpointRename       = "/file/rename"
+	endpointUpload       = "/file/upload_request"
+	endpointS3Auth       = "/file/s3_upload_object/auth"
+	endpointS3Parts      = "/file/s3_repare_upload_parts_batch"
+	endpointUploadDone   = "/file/upload_complete/v2"
 
 	listInterval = 700 * time.Millisecond
 	listCooldown = 10 * time.Minute
+
+	uploadChunkSize = int64(16 * 1024 * 1024)
 )
 
 type Driver struct {
@@ -237,8 +247,302 @@ func (d *Driver) StreamURL(ctx context.Context, fileID string) (*drives.StreamLi
 	return d.resolveDownloadURL(ctx, downloadURL)
 }
 
-func (d *Driver) Upload(context.Context, string, string, io.Reader, int64) (string, error) {
-	return "", drives.ErrNotSupported
+// Upload 实现 drives.Drive 接口；只返回 fileID。
+// 完整上传元数据见 UploadAndReportHash。
+func (d *Driver) Upload(ctx context.Context, parentID, name string, r io.Reader, size int64) (string, error) {
+	res, err := d.UploadAndReportHash(ctx, parentID, name, r, size)
+	if err != nil {
+		return "", err
+	}
+	return res.FileID, nil
+}
+
+// UploadResult 是 UploadAndReportHash 的返回值。
+//
+// FileID 是 123 云盘分配的新文件 ID；Hash 是本次上传的 MD5 HEX（小写），
+// 与 123 云盘列表返回的 Etag 一致；Size 是实际上传字节数。
+type UploadResult struct {
+	FileID string
+	Hash   string
+	Size   int64
+}
+
+// UploadAndReportHash 把 r 上传到 parentID 目录下的指定文件名，返回新文件元数据。
+//
+// 123 云盘 Web 上传协议需要先计算文件 MD5 作为 etag 申请 upload_request。
+// 命中 Reuse 时服务端已经秒传；否则用返回的 S3 预签名 URL 分片 PUT，最后
+// 调 upload_complete/v2 完成。
+func (d *Driver) UploadAndReportHash(ctx context.Context, parentID, name string, r io.Reader, size int64) (UploadResult, error) {
+	if r == nil {
+		return UploadResult{}, errors.New("123pan upload: nil reader")
+	}
+	if size < 0 {
+		return UploadResult{}, fmt.Errorf("123pan upload: invalid size %d", size)
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return UploadResult{}, errors.New("123pan upload: empty file name")
+	}
+	parentID = strings.TrimSpace(parentID)
+	if parentID == "" || parentID == "/" {
+		parentID = d.rootID
+	}
+
+	tmp, md5Hex, actualSize, err := bufferAndHashMD5(r, size)
+	if err != nil {
+		return UploadResult{}, err
+	}
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+	}()
+
+	body := map[string]any{
+		"driveId":      0,
+		"duplicate":    2,
+		"etag":         md5Hex,
+		"fileName":     name,
+		"parentFileId": parentID,
+		"size":         actualSize,
+		"type":         0,
+	}
+	var resp uploadResp
+	if _, err := d.request(ctx, endpointUpload, http.MethodPost, func(req *resty.Request) {
+		req.SetBody(body)
+	}, &resp); err != nil {
+		return UploadResult{}, fmt.Errorf("123pan upload: request session: %w", err)
+	}
+
+	result := UploadResult{
+		FileID: strconv.FormatInt(resp.Data.FileID, 10),
+		Hash:   md5Hex,
+		Size:   actualSize,
+	}
+	if resp.Data.FileID == 0 {
+		result.FileID = ""
+	}
+
+	if resp.Data.Reuse || strings.TrimSpace(resp.Data.Key) == "" {
+		if result.FileID == "" {
+			fileID, err := d.findUploadedFileID(ctx, parentID, name, md5Hex)
+			if err != nil {
+				return UploadResult{}, err
+			}
+			result.FileID = fileID
+		}
+		d.cacheUploadedFile(result.FileID, parentID, name, md5Hex, actualSize)
+		return result, nil
+	}
+
+	if err := d.uploadToPresignedURLs(ctx, &resp, tmp, actualSize); err != nil {
+		return UploadResult{}, err
+	}
+	if err := d.completeUpload(ctx, &resp, actualSize); err != nil {
+		return UploadResult{}, err
+	}
+	if result.FileID == "" {
+		fileID, err := d.findUploadedFileID(ctx, parentID, name, md5Hex)
+		if err != nil {
+			return UploadResult{}, err
+		}
+		result.FileID = fileID
+	}
+	d.cacheUploadedFile(result.FileID, parentID, name, md5Hex, actualSize)
+	return result, nil
+}
+
+func (d *Driver) uploadToPresignedURLs(ctx context.Context, up *uploadResp, tmp *os.File, size int64) error {
+	if strings.TrimSpace(up.Data.Bucket) == "" || strings.TrimSpace(up.Data.Key) == "" || strings.TrimSpace(up.Data.UploadID) == "" {
+		return errors.New("123pan upload: incomplete upload session")
+	}
+	chunkCount := int64(1)
+	if size > uploadChunkSize {
+		chunkCount = (size + uploadChunkSize - 1) / uploadChunkSize
+	}
+	batchSize := int64(1)
+	endpoint := endpointS3Auth
+	if chunkCount > 1 {
+		batchSize = 10
+		endpoint = endpointS3Parts
+	}
+	for start := int64(1); start <= chunkCount; start += batchSize {
+		end := minInt64(start+batchSize, chunkCount+1)
+		urls, err := d.getUploadURLs(ctx, endpoint, up, start, end)
+		if err != nil {
+			return err
+		}
+		for part := start; part < end; part++ {
+			offset := (part - 1) * uploadChunkSize
+			partSize := minInt64(uploadChunkSize, size-offset)
+			uploadURL := strings.TrimSpace(urls.Data.PreSignedURLs[strconv.FormatInt(part, 10)])
+			if uploadURL == "" {
+				return fmt.Errorf("123pan upload: empty presigned url for part %d", part)
+			}
+			if err := d.putUploadPart(ctx, uploadURL, tmp, offset, partSize); err != nil {
+				if !isForbiddenUploadPart(err) {
+					return err
+				}
+				refreshed, refreshErr := d.getUploadURLs(ctx, endpoint, up, part, part+1)
+				if refreshErr != nil {
+					return refreshErr
+				}
+				uploadURL = strings.TrimSpace(refreshed.Data.PreSignedURLs[strconv.FormatInt(part, 10)])
+				if uploadURL == "" {
+					return fmt.Errorf("123pan upload: empty refreshed presigned url for part %d", part)
+				}
+				if retryErr := d.putUploadPart(ctx, uploadURL, tmp, offset, partSize); retryErr != nil {
+					return retryErr
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (d *Driver) getUploadURLs(ctx context.Context, endpoint string, up *uploadResp, start, end int64) (*s3PreSignedURLsResp, error) {
+	body := map[string]any{
+		"StorageNode":     up.Data.StorageNode,
+		"bucket":          up.Data.Bucket,
+		"key":             up.Data.Key,
+		"partNumberEnd":   end,
+		"partNumberStart": start,
+		"uploadId":        up.Data.UploadID,
+	}
+	var resp s3PreSignedURLsResp
+	if _, err := d.request(ctx, endpoint, http.MethodPost, func(req *resty.Request) {
+		req.SetBody(body)
+	}, &resp); err != nil {
+		return nil, fmt.Errorf("123pan upload: presigned urls: %w", err)
+	}
+	return &resp, nil
+}
+
+type forbiddenUploadPartError struct {
+	status int
+}
+
+func (e *forbiddenUploadPartError) Error() string {
+	return fmt.Sprintf("123pan upload: presigned put status=%d", e.status)
+}
+
+func isForbiddenUploadPart(err error) bool {
+	var forbidden *forbiddenUploadPartError
+	return errors.As(err, &forbidden)
+}
+
+func (d *Driver) putUploadPart(ctx context.Context, uploadURL string, tmp *os.File, offset, size int64) error {
+	reader := io.NewSectionReader(tmp, offset, size)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, reader)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = size
+	req.Header.Set("User-Agent", d.userAgent)
+	res, err := d.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("123pan upload: presigned put: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode == http.StatusOK || res.StatusCode == http.StatusCreated || res.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+	if isP123RateLimitHTTPResponse(res.StatusCode, res.Header.Get("Retry-After"), string(body)) {
+		return p123RateLimitErrorFromHTTP("upload part", res.StatusCode, res.Header.Get("Retry-After"), string(body))
+	}
+	if res.StatusCode == http.StatusForbidden {
+		return &forbiddenUploadPartError{status: res.StatusCode}
+	}
+	return fmt.Errorf("123pan upload: presigned put status=%d body=%s", res.StatusCode, strings.TrimSpace(string(body)))
+}
+
+func (d *Driver) completeUpload(ctx context.Context, up *uploadResp, size int64) error {
+	if up.Data.FileID == 0 {
+		return errors.New("123pan upload: empty file id")
+	}
+	body := map[string]any{
+		"StorageNode": up.Data.StorageNode,
+		"bucket":      up.Data.Bucket,
+		"fileId":      up.Data.FileID,
+		"fileSize":    size,
+		"isMultipart": size > uploadChunkSize,
+		"key":         up.Data.Key,
+		"uploadId":    up.Data.UploadID,
+	}
+	if _, err := d.request(ctx, endpointUploadDone, http.MethodPost, func(req *resty.Request) {
+		req.SetBody(body)
+	}, nil); err != nil {
+		return fmt.Errorf("123pan upload: complete: %w", err)
+	}
+	return nil
+}
+
+func (d *Driver) findUploadedFileID(ctx context.Context, parentID, name, md5Hex string) (string, error) {
+	entries, err := d.List(ctx, parentID)
+	if err != nil {
+		return "", fmt.Errorf("123pan upload verify: %w", err)
+	}
+	var hashHit string
+	for _, e := range entries {
+		if e.IsDir {
+			continue
+		}
+		if !strings.EqualFold(e.Hash, md5Hex) {
+			continue
+		}
+		if e.Name == name {
+			return e.ID, nil
+		}
+		if hashHit == "" {
+			hashHit = e.ID
+		}
+	}
+	if hashHit != "" {
+		return hashHit, nil
+	}
+	for _, e := range entries {
+		if !e.IsDir && e.Name == name {
+			return e.ID, nil
+		}
+	}
+	return "", fmt.Errorf("123pan upload: uploaded file %q not found in parent %q", name, parentID)
+}
+
+func (d *Driver) cacheUploadedFile(fileID, parentID, name, md5Hex string, size int64) {
+	id, err := strconv.ParseInt(strings.TrimSpace(fileID), 10, 64)
+	if err != nil || id == 0 {
+		return
+	}
+	d.cacheFile(panFile{
+		FileName: name,
+		Size:     size,
+		FileID:   id,
+		Type:     0,
+		Etag:     md5Hex,
+	}, parentID)
+}
+
+// Rename 调用 123 云盘 Web API 把指定 fileID 重命名为 newName。
+func (d *Driver) Rename(ctx context.Context, fileID, newName string) error {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return errors.New("123pan rename: empty file id")
+	}
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return errors.New("123pan rename: empty new name")
+	}
+	if _, err := d.request(ctx, endpointRename, http.MethodPost, func(req *resty.Request) {
+		req.SetBody(map[string]any{
+			"driveId":  0,
+			"fileId":   fileID,
+			"fileName": newName,
+		})
+	}, nil); err != nil {
+		return fmt.Errorf("123pan rename: %w", err)
+	}
+	d.renameCachedFile(fileID, newName)
+	return nil
 }
 
 func (d *Driver) EnsureDir(ctx context.Context, pathFromRoot string) (string, error) {
@@ -629,6 +933,15 @@ func (d *Driver) cacheFile(f panFile, parentID string) {
 	d.fileMu.Unlock()
 }
 
+func (d *Driver) renameCachedFile(fileID, newName string) {
+	d.fileMu.Lock()
+	defer d.fileMu.Unlock()
+	if c, ok := d.files[fileID]; ok {
+		c.file.FileName = newName
+		d.files[fileID] = c
+	}
+}
+
 func (d *Driver) cachedFile(fileID string) (panFile, string, bool) {
 	d.fileMu.RLock()
 	defer d.fileMu.RUnlock()
@@ -736,6 +1049,33 @@ func splitPath(p string) []string {
 		return nil
 	}
 	return strings.Split(p, "/")
+}
+
+func bufferAndHashMD5(r io.Reader, declaredSize int64) (*os.File, string, int64, error) {
+	tmp, err := os.CreateTemp("", "p123-upload-*.bin")
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("123pan upload: create tmp: %w", err)
+	}
+	h := md5.New()
+	written, err := io.Copy(io.MultiWriter(tmp, h), r)
+	if err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return nil, "", 0, fmt.Errorf("123pan upload: buffer body: %w", err)
+	}
+	if declaredSize >= 0 && written != declaredSize {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return nil, "", 0, fmt.Errorf("123pan upload: size mismatch: declared %d, copied %d", declaredSize, written)
+	}
+	return tmp, strings.ToLower(hex.EncodeToString(h.Sum(nil))), written, nil
+}
+
+func minInt64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func fileToEntry(f panFile, parentID string) drives.Entry {

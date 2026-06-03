@@ -59,7 +59,7 @@ type AdminServer struct {
 	// Theme 读写（"dark" | "pink"）
 	GetTheme func() string
 	SetTheme func(theme string) error
-	// Spider91 → 115/PikPak 上传目标 drive ID 读写
+	// Spider91 → 115/123/PikPak/OneDrive 上传目标 drive ID 读写
 	GetSpider91UploadDriveID func() string
 	SetSpider91UploadDriveID func(driveID string) error
 	// OnRunNightlyJob 触发一次完整的凌晨流水线（Phase1 扫盘 + Phase2 91 爬虫 +

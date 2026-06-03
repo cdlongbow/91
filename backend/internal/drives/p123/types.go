@@ -129,6 +129,27 @@ type mkdirResp struct {
 	} `json:"data"`
 }
 
+type uploadResp struct {
+	Data struct {
+		AccessKeyID     string `json:"AccessKeyId"`
+		Bucket          string `json:"Bucket"`
+		Key             string `json:"Key"`
+		SecretAccessKey string `json:"SecretAccessKey"`
+		SessionToken    string `json:"SessionToken"`
+		FileID          int64  `json:"FileId"`
+		Reuse           bool   `json:"Reuse"`
+		EndPoint        string `json:"EndPoint"`
+		StorageNode     string `json:"StorageNode"`
+		UploadID        string `json:"UploadId"`
+	} `json:"data"`
+}
+
+type s3PreSignedURLsResp struct {
+	Data struct {
+		PreSignedURLs map[string]string `json:"presignedUrls"`
+	} `json:"data"`
+}
+
 type flexibleTime struct {
 	t time.Time
 }

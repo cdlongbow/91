@@ -38,6 +38,7 @@ func TestSpider91IntCredFallbacks(t *testing.T) {
 func TestSpider91UploadDriveIDDoesNotAutoSelectTarget(t *testing.T) {
 	reg := proxy.NewRegistry()
 	reg.Set("p115-one", &spider91UploadTargetFakeDrive{id: "p115-one", kind: "p115"})
+	reg.Set("p123-one", &spider91UploadTargetFakeDrive{id: "p123-one", kind: "p123"})
 	reg.Set("onedrive-one", &spider91UploadTargetFakeDrive{id: "onedrive-one", kind: "onedrive"})
 
 	app := &App{registry: reg}
@@ -48,6 +49,11 @@ func TestSpider91UploadDriveIDDoesNotAutoSelectTarget(t *testing.T) {
 	app.spider91UploadDriveID = "p115-one"
 	if got := app.Spider91UploadDriveID(); got != "p115-one" {
 		t.Fatalf("explicit upload target = %q, want p115-one", got)
+	}
+
+	app.spider91UploadDriveID = "p123-one"
+	if got := app.Spider91UploadDriveID(); got != "p123-one" {
+		t.Fatalf("explicit p123 upload target = %q, want p123-one", got)
 	}
 
 	app.spider91UploadDriveID = "onedrive-one"

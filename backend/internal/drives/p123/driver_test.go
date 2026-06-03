@@ -1,10 +1,14 @@
 package p123
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -252,5 +256,232 @@ func TestResolveDownloadURL429ReturnsRateLimitError(t *testing.T) {
 	}
 	if rateLimit.RetryAfter != 3*time.Second {
 		t.Fatalf("RetryAfter = %s, want 3s", rateLimit.RetryAfter)
+	}
+}
+
+func TestUploadAndReportHashUsesPresignedPUTAndComplete(t *testing.T) {
+	ctx := context.Background()
+	body := []byte("video bytes for 123 upload")
+	wantMD5 := fmt.Sprintf("%x", md5.Sum(body))
+
+	var putBody []byte
+	upload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Fatalf("upload method = %s, want PUT", r.Method)
+		}
+		if r.ContentLength != int64(len(body)) {
+			t.Fatalf("ContentLength = %d, want %d", r.ContentLength, len(body))
+		}
+		got, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upload body: %v", err)
+		}
+		putBody = got
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upload.Close()
+
+	var uploadRequest map[string]any
+	var uploadURLRequest map[string]any
+	var completeRequest map[string]any
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/file/upload_request":
+			if err := json.NewDecoder(r.Body).Decode(&uploadRequest); err != nil {
+				t.Fatalf("decode upload_request: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"FileId":      9001,
+					"Bucket":      "bucket-1",
+					"Key":         "key-1",
+					"StorageNode": "node-1",
+					"UploadId":    "upload-1",
+				},
+			})
+		case "/file/s3_upload_object/auth":
+			if err := json.NewDecoder(r.Body).Decode(&uploadURLRequest); err != nil {
+				t.Fatalf("decode s3 auth: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"presignedUrls": map[string]string{
+						"1": upload.URL + "/part-1",
+					},
+				},
+			})
+		case "/file/upload_complete/v2":
+			if err := json.NewDecoder(r.Body).Decode(&completeRequest); err != nil {
+				t.Fatalf("decode complete: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+
+	d := New(Config{
+		ID:             "123-main",
+		AccessToken:    "token-1",
+		MainAPIBaseURL: api.URL,
+	})
+	res, err := d.UploadAndReportHash(ctx, "parent-1", "video.mp4", bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("UploadAndReportHash() error = %v", err)
+	}
+	if res.FileID != "9001" {
+		t.Fatalf("FileID = %q, want 9001", res.FileID)
+	}
+	if res.Hash != wantMD5 {
+		t.Fatalf("Hash = %q, want %q", res.Hash, wantMD5)
+	}
+	if res.Size != int64(len(body)) {
+		t.Fatalf("Size = %d, want %d", res.Size, len(body))
+	}
+	if !bytes.Equal(putBody, body) {
+		t.Fatalf("PUT body = %q, want %q", putBody, body)
+	}
+	if uploadRequest["etag"] != wantMD5 {
+		t.Fatalf("upload etag = %#v, want %q", uploadRequest["etag"], wantMD5)
+	}
+	if uploadRequest["fileName"] != "video.mp4" || uploadRequest["parentFileId"] != "parent-1" {
+		t.Fatalf("upload request = %#v, want fileName and parentFileId", uploadRequest)
+	}
+	if uploadURLRequest["partNumberStart"].(float64) != 1 || uploadURLRequest["partNumberEnd"].(float64) != 2 {
+		t.Fatalf("s3 auth request = %#v, want part range 1..2", uploadURLRequest)
+	}
+	if completeRequest["fileId"].(float64) != 9001 || completeRequest["fileSize"].(float64) != float64(len(body)) {
+		t.Fatalf("complete request = %#v, want file id and size", completeRequest)
+	}
+	if completeRequest["isMultipart"].(bool) {
+		t.Fatalf("complete isMultipart = true, want false")
+	}
+}
+
+func TestUploadAndReportHashReuseSkipsPUTAndComplete(t *testing.T) {
+	body := []byte("reused body")
+	var presignedCalled bool
+	var completeCalled bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/file/upload_request":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"FileId": 7001,
+					"Reuse":  true,
+				},
+			})
+		case "/file/s3_upload_object/auth", "/file/s3_repare_upload_parts_batch":
+			presignedCalled = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0})
+		case "/file/upload_complete/v2":
+			completeCalled = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+
+	d := New(Config{
+		ID:             "123-main",
+		AccessToken:    "token-1",
+		MainAPIBaseURL: api.URL,
+	})
+	res, err := d.UploadAndReportHash(context.Background(), "parent-1", "reused.mp4", bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("UploadAndReportHash() error = %v", err)
+	}
+	if res.FileID != "7001" {
+		t.Fatalf("FileID = %q, want 7001", res.FileID)
+	}
+	if presignedCalled {
+		t.Fatal("reuse upload should not request presigned URLs")
+	}
+	if completeCalled {
+		t.Fatal("reuse upload should not call upload_complete")
+	}
+}
+
+func TestUploadPresignedPUT429ReturnsRateLimitError(t *testing.T) {
+	upload := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "4")
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+	}))
+	defer upload.Close()
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/file/upload_request":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"FileId":      9001,
+					"Bucket":      "bucket-1",
+					"Key":         "key-1",
+					"StorageNode": "node-1",
+					"UploadId":    "upload-1",
+				},
+			})
+		case "/file/s3_upload_object/auth":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{
+					"presignedUrls": map[string]string{"1": upload.URL},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+
+	d := New(Config{
+		ID:             "123-main",
+		AccessToken:    "token-1",
+		MainAPIBaseURL: api.URL,
+	})
+	_, err := d.UploadAndReportHash(context.Background(), "parent-1", "limited.mp4", strings.NewReader("limited"), int64(len("limited")))
+	var rateLimit *drives.RateLimitError
+	if !errors.As(err, &rateLimit) {
+		t.Fatalf("error = %T %[1]v, want RateLimitError", err)
+	}
+	if rateLimit.RetryAfter != 4*time.Second {
+		t.Fatalf("RetryAfter = %s, want 4s", rateLimit.RetryAfter)
+	}
+}
+
+func TestRenameSendsExpectedBody(t *testing.T) {
+	var renameRequest map[string]any
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/file/rename" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&renameRequest); err != nil {
+			t.Fatalf("decode rename: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
+	}))
+	defer api.Close()
+
+	d := New(Config{
+		ID:             "123-main",
+		AccessToken:    "token-1",
+		MainAPIBaseURL: api.URL,
+	})
+	if err := d.Rename(context.Background(), "9001", "new name.mp4"); err != nil {
+		t.Fatalf("Rename() error = %v", err)
+	}
+	if renameRequest["driveId"].(float64) != 0 || renameRequest["fileId"] != "9001" || renameRequest["fileName"] != "new name.mp4" {
+		t.Fatalf("rename request = %#v, want driveId/fileId/fileName", renameRequest)
 	}
 }

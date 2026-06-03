@@ -388,9 +388,9 @@ export type Theme = "dark" | "pink";
 export type Settings = {
   theme: Theme;
   /**
-   * spider91 视频迁移到云盘时的目标 drive ID（必须是已挂载的 pikpak、p115 或 onedrive drive）。
+   * spider91 视频迁移到云盘时的目标 drive ID（必须是已挂载的 pikpak、p115、p123 或 onedrive drive）。
    * - 空字符串：本地保存，不上传到云盘。
-   * - 非空：显式指定。后端会校验 drive 存在且 kind ∈ {pikpak, p115, onedrive}。
+   * - 非空：显式指定。后端会校验 drive 存在且 kind ∈ {pikpak, p115, p123, onedrive}。
    */
   spider91UploadDriveId: string;
 };
